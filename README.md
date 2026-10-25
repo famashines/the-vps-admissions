@@ -36,6 +36,19 @@ the `commandId`, the domain rows, and one event (`StudentRegistered`,
 database rule with a name (see `migrations/002_enrollment.sql`) becomes a
 clear 404 or 409 message.
 
+## Events to NATS
+
+The `events` table is the outbox. Every second a relay takes the rows with no
+`published_at`, publishes each one to JetStream on its type subject (for
+example `admissions.StudentEnrolled`) as an `EventEnvelopeV1`
+envelope with the header `Nats-Msg-Id` = `eventId`, and then sets
+`published_at`. A crash between the publish and the mark sends the row again;
+the stream drops the duplicate by its id. The stream `ADMISSIONS`
+(`admissions.>`, file storage) is made at start when it is missing.
+
+When NATS is down, the service still works and the events wait in the outbox.
+Settings: `NATS_URL`, `NATS_USER`, `NATS_PASSWORD` (no `NATS_URL`: no relay).
+
 ## Database
 
 `DATABASE_URL` comes from the CNPG secret `the-vps-db-app`. The SQL files in
