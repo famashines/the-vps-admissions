@@ -107,7 +107,7 @@ test("the list has the students, newest first, with the date as YYYY-MM-DD", { s
   assert.equal(list.json()[0].studentId, created.json().studentId);
   assert.equal(list.json()[0].dateOfBirth, "2016-03-14");
   assert.equal(list.json()[0].fatherName, "Imran Khan");
-  assert.deepEqual(Object.keys(list.json()[0]).sort(), ["admissionNumber", "dateOfBirth", "enrollments", "fatherName", "firstName", "gender", "guardian", "lastName", "studentId"]);
+  assert.deepEqual(Object.keys(list.json()[0]).sort(), ["admissionNumber", "dateOfBirth", "enrollments", "fatherName", "firstName", "gender", "guardian", "lastName", "studentId", "version"]);
 });
 
 test("ready checks the database", { skip }, async () => {
@@ -169,7 +169,7 @@ test("enrollment: open a year, create sections, enroll a student, list them", { 
 
   const students = (await app.inject({ url: "/students" })).json();
   const zainab = students.find((s: { studentId: string }) => s.studentId === student.studentId);
-  assert.deepEqual(zainab.enrollments, [{ academicYearId, academicYearName: "2026-27", classSectionId: sectionA.json().classSectionId, grade: "class-3", section: "A" }]);
+  assert.deepEqual(zainab.enrollments, [{ enrollmentId: enroll.json().enrollmentId, version: 1, academicYearId, academicYearName: "2026-27", classSectionId: sectionA.json().classSectionId, grade: "class-3", section: "A" }]);
   const { rows } = await pool.query("select event_type, count(*)::int as n from events where event_type <> 'admissions.StudentRegistered' group by 1 order by 1");
   assert.deepEqual(rows, [
     { event_type: "admissions.AcademicYearOpened", n: 1 },
@@ -206,4 +206,71 @@ test("a student must be 2 to 25 years old on the registration day", { skip }, as
   const response = await app.inject({ method: "POST", url: "/commands/register-student", payload: command({ payload: { ...payload, dateOfBirth: "1241-11-01" } }) });
   assert.equal(response.statusCode, 422);
   assert.deepEqual(response.json().fields.map((f: { field: string }) => f.field), ["dateOfBirth"]);
+});
+
+test("edit: details, section, section name and school year, each with its version", { skip }, async () => {
+  const app = buildApp(pool);
+  const post = (path: string, type: string, payload: object, id?: string) =>
+    app.inject({ method: "POST", url: `/commands/${path}`, payload: envelope(type, payload, id) });
+
+  const year = (await post("open-academic-year", "admissions.OpenAcademicYear", { name: "2040-41", startsOn: "2040-04-01", endsOn: "2041-03-31" })).json();
+  const a = (await post("create-class-section", "admissions.CreateClassSection", { academicYearId: year.academicYearId, grade: "class-5", section: "A" })).json();
+  const b = (await post("create-class-section", "admissions.CreateClassSection", { academicYearId: year.academicYearId, grade: "class-5", section: "B" })).json();
+  const student = (await app.inject({ method: "POST", url: "/commands/register-student", payload: command({ payload: { ...payload, firstName: "Hamza" } }) })).json();
+  const enrollment = (await post("enroll-student", "admissions.EnrollStudent", { studentId: student.studentId, classSectionId: a.classSectionId })).json();
+
+  const details = { ...payload, studentId: student.studentId, firstName: "Hamza Ali", guardian: { ...payload.guardian, phone: "+923331112222" } };
+  const editId = randomUUID();
+  const edited = await post("update-student-details", "admissions.UpdateStudentDetails", { ...details, expectedVersion: 1 }, editId);
+  assert.equal(edited.statusCode, 201);
+  assert.equal((await post("update-student-details", "admissions.UpdateStudentDetails", { ...details, expectedVersion: 1 }, editId)).statusCode, 200);
+  const stale = await post("update-student-details", "admissions.UpdateStudentDetails", { ...details, lastName: "Old", expectedVersion: 1 });
+  assert.equal(stale.statusCode, 409);
+  assert.match(stale.json().error, /changed by someone else/);
+  const tooOld = await post("update-student-details", "admissions.UpdateStudentDetails", { ...details, dateOfBirth: "1990-01-01", expectedVersion: 2 });
+  assert.equal(tooOld.statusCode, 422);
+  assert.equal(tooOld.json().fields[0].field, "dateOfBirth");
+  assert.equal((await post("update-student-details", "admissions.UpdateStudentDetails", { ...details, studentId: randomUUID(), expectedVersion: 1 })).statusCode, 404);
+  assert.equal((await post("update-student-details", "admissions.UpdateStudentDetails", { ...details, admissionNumber: "x", expectedVersion: 2 })).statusCode, 400);
+
+  const race = await Promise.all([1, 2, 3].map(() => post("update-student-details", "admissions.UpdateStudentDetails", { ...details, expectedVersion: 2 })));
+  assert.deepEqual(race.map((r) => r.statusCode).sort(), [201, 409, 409]);
+
+  const moved = await post("change-student-section", "admissions.ChangeStudentSection", { enrollmentId: enrollment.enrollmentId, expectedVersion: 1, classSectionId: b.classSectionId });
+  assert.equal(moved.statusCode, 201);
+  assert.equal(moved.json().previousClassSectionId, a.classSectionId);
+  const other = (await post("open-academic-year", "admissions.OpenAcademicYear", { name: "2041-42", startsOn: "2041-04-01", endsOn: "2042-03-31" })).json();
+  const otherSection = (await post("create-class-section", "admissions.CreateClassSection", { academicYearId: other.academicYearId, grade: "class-5", section: "A" })).json();
+  const wrongYear = await post("change-student-section", "admissions.ChangeStudentSection", { enrollmentId: enrollment.enrollmentId, expectedVersion: 2, classSectionId: otherSection.classSectionId });
+  assert.equal(wrongYear.statusCode, 422);
+
+  const rename = await post("update-class-section", "admissions.UpdateClassSection", { classSectionId: a.classSectionId, expectedVersion: 1, grade: "class-6", section: "Rose" });
+  assert.equal(rename.statusCode, 201);
+  const busy = await post("update-class-section", "admissions.UpdateClassSection", { classSectionId: b.classSectionId, expectedVersion: 1, grade: "class-6", section: "B" });
+  assert.equal(busy.statusCode, 409);
+  assert.equal(busy.json().fields[0].field, "grade");
+  assert.equal((await post("update-class-section", "admissions.UpdateClassSection", { classSectionId: b.classSectionId, expectedVersion: 1, grade: "class-5", section: "Blue" })).statusCode, 201);
+  const taken = await post("update-class-section", "admissions.UpdateClassSection", { classSectionId: b.classSectionId, expectedVersion: 2, grade: "class-5", section: "A" });
+  assert.equal(taken.statusCode, 201);
+  const clash = await post("update-class-section", "admissions.UpdateClassSection", { classSectionId: a.classSectionId, expectedVersion: 2, grade: "class-5", section: "A" });
+  assert.equal(clash.statusCode, 409);
+  assert.match(clash.json().error, /section exists/);
+
+  const yearEdit = { academicYearId: year.academicYearId, name: "2040-41", startsOn: "2040-03-15", endsOn: "2041-03-31" };
+  assert.equal((await post("update-academic-year", "admissions.UpdateAcademicYear", { ...yearEdit, expectedVersion: 1 })).statusCode, 201);
+  assert.equal((await post("update-academic-year", "admissions.UpdateAcademicYear", { ...yearEdit, endsOn: "2041-04-15", expectedVersion: 2 })).statusCode, 409);
+  assert.equal((await post("update-academic-year", "admissions.UpdateAcademicYear", { ...yearEdit, name: "2041-42", expectedVersion: 2 })).statusCode, 409);
+  assert.equal((await post("update-academic-year", "admissions.UpdateAcademicYear", { ...yearEdit, endsOn: "2040-01-01", expectedVersion: 2 })).statusCode, 422);
+
+  const listed = (await app.inject({ url: "/students" })).json().find((s: { studentId: string }) => s.studentId === student.studentId);
+  assert.equal(listed.version, 3);
+  assert.equal(listed.firstName, "Hamza Ali");
+  assert.equal(listed.guardian.phone, "+923331112222");
+  assert.deepEqual(listed.enrollments.map((e: { enrollmentId: string; version: number; section: string }) => [e.enrollmentId, e.version, e.section]), [[enrollment.enrollmentId, 2, "A"]]);
+  const y = (await app.inject({ url: "/academic-years" })).json().find((x: { academicYearId: string }) => x.academicYearId === year.academicYearId);
+  assert.equal(y.version, 2);
+  assert.equal(y.startsOn, "2040-03-15");
+  assert.deepEqual(y.sections.map((s: { grade: string; section: string; version: number; students: number }) => `${s.grade} ${s.section} v${s.version} ${s.students}`), ["class-5 A v3 1", "class-6 Rose v2 0"]);
+  const { rows } = await pool.query("select event_type, aggregate_version from events where aggregate_id = $1 order by aggregate_version", [student.studentId]);
+  assert.deepEqual(rows.map((r) => `${r.event_type} ${r.aggregate_version}`), ["admissions.StudentRegistered 1", "admissions.StudentDetailsUpdated 2", "admissions.StudentDetailsUpdated 3"]);
 });

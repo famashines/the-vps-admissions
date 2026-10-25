@@ -1,7 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { RegisterStudentCommandPayloadV1, StudentRegisteredEventPayloadV1 } from "@famashines/the-vps-contracts";
+import type {
+  RegisterStudentCommandPayloadV1,
+  StudentDetailsUpdatedEventPayloadV1,
+  StudentRegisteredEventPayloadV1,
+  UpdateStudentDetailsCommandPayloadV1,
+} from "@famashines/the-vps-contracts";
 import type pg from "pg";
-import { Refused, runCommand, type Command } from "./command.ts";
+import { nextVersion, Refused, runCommand, type Command } from "./command.ts";
 
 export type RegisterStudent = Command<RegisterStudentCommandPayloadV1>;
 
@@ -17,11 +22,15 @@ export function ageOn(dateOfBirth: string, today: string) {
   return ty - by - (tm < bm || (tm === bm && td < bd) ? 1 : 0);
 }
 
-export async function registerStudent(pool: pg.Pool, command: RegisterStudent, now = new Date()) {
-  const age = ageOn(command.payload.dateOfBirth, todayInPakistan(now));
+function checkAge(dateOfBirth: string, registeredAt: Date) {
+  const age = ageOn(dateOfBirth, todayInPakistan(registeredAt));
   if (age < MIN_AGE || age > MAX_AGE) {
     throw new Refused(422, `The student must be ${MIN_AGE} to ${MAX_AGE} years old on the registration day.`, "dateOfBirth");
   }
+}
+
+export async function registerStudent(pool: pg.Pool, command: RegisterStudent, now = new Date()) {
+  checkAge(command.payload.dateOfBirth, now);
   const result = await runCommand<RegisterStudentCommandPayloadV1, StudentRegisteredEventPayloadV1>(
     pool,
     command,
@@ -58,11 +67,31 @@ export async function registerStudent(pool: pg.Pool, command: RegisterStudent, n
   return { student: result.value, replayed: result.replayed };
 }
 
+export async function updateStudentDetails(pool: pg.Pool, command: Command<UpdateStudentDetailsCommandPayloadV1>, now = new Date()) {
+  const { studentId, expectedVersion, ...details } = command.payload;
+  return runCommand<UpdateStudentDetailsCommandPayloadV1, StudentDetailsUpdatedEventPayloadV1>(pool, command, async (client) => {
+    const aggregateVersion = await nextVersion(client, studentId, expectedVersion, "student");
+    const { rows } = await client.query(
+      `update students set first_name = $2, last_name = $3, father_name = $4, date_of_birth = $5, gender = $6,
+         guardian_name = $7, guardian_relation = $8, guardian_phone = $9
+       where student_id = $1 returning registered_at`,
+      [studentId, details.firstName, details.lastName, details.fatherName, details.dateOfBirth, details.gender,
+        details.guardian.name, details.guardian.relation, details.guardian.phone],
+    );
+    checkAge(details.dateOfBirth, rows[0].registered_at);
+    const student: StudentDetailsUpdatedEventPayloadV1 = { studentId, ...details };
+    return { value: student, event: { type: "admissions.StudentDetailsUpdated", aggregateId: studentId, aggregateVersion, payload: student } };
+  }, now);
+}
+
+export const versionOf = (column: string) => `(select max(aggregate_version) from events where aggregate_id = ${column})`;
+
 export async function listStudents(pool: pg.Pool) {
   const { rows } = await pool.query(
     `select s.student_id, s.admission_number, s.first_name, s.last_name, s.father_name, s.date_of_birth, s.gender,
-       s.guardian_name, s.guardian_relation, s.guardian_phone,
+       s.guardian_name, s.guardian_relation, s.guardian_phone, ${versionOf("s.student_id")} as version,
        coalesce(json_agg(json_build_object(
+         'enrollmentId', e.enrollment_id, 'version', ${versionOf("e.enrollment_id")},
          'academicYearId', y.academic_year_id, 'academicYearName', y.name,
          'classSectionId', c.class_section_id, 'grade', c.grade, 'section', c.section)
          order by y.starts_on desc) filter (where e.enrollment_id is not null), '[]') as enrollments
@@ -76,6 +105,7 @@ export async function listStudents(pool: pg.Pool) {
   return rows.map((r) => ({
     studentId: r.student_id,
     admissionNumber: r.admission_number,
+    version: r.version,
     firstName: r.first_name,
     lastName: r.last_name,
     fatherName: r.father_name,

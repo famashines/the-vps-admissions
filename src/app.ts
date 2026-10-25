@@ -1,8 +1,8 @@
 import Fastify, { type FastifyServerOptions } from "fastify";
 import type pg from "pg";
 import { Refused, type Command, type Result } from "./command.ts";
-import { createClassSection, enrollStudent, listAcademicYears, openAcademicYear } from "./enrollment.ts";
-import { listStudents, registerStudent } from "./students.ts";
+import { changeStudentSection, createClassSection, enrollStudent, listAcademicYears, openAcademicYear, updateAcademicYear, updateClassSection } from "./enrollment.ts";
+import { listStudents, registerStudent, updateStudentDetails } from "./students.ts";
 import { errorsOf, payloadValidators, validEnvelope } from "./validate.ts";
 
 type CommandType = keyof typeof payloadValidators;
@@ -30,6 +30,10 @@ export function buildApp(pool: pg.Pool, options: FastifyServerOptions = {}) {
     "admissions.OpenAcademicYear": (c) => openAcademicYear(pool, c),
     "admissions.CreateClassSection": (c) => createClassSection(pool, c),
     "admissions.EnrollStudent": (c) => enrollStudent(pool, c),
+    "admissions.UpdateStudentDetails": (c) => updateStudentDetails(pool, c),
+    "admissions.ChangeStudentSection": (c) => changeStudentSection(pool, c),
+    "admissions.UpdateClassSection": (c) => updateClassSection(pool, c),
+    "admissions.UpdateAcademicYear": (c) => updateAcademicYear(pool, c),
   };
 
   const route = (path: string, type: CommandType) =>
@@ -58,6 +62,10 @@ export function buildApp(pool: pg.Pool, options: FastifyServerOptions = {}) {
   route("/commands/open-academic-year", "admissions.OpenAcademicYear");
   route("/commands/create-class-section", "admissions.CreateClassSection");
   route("/commands/enroll-student", "admissions.EnrollStudent");
+  route("/commands/update-student-details", "admissions.UpdateStudentDetails");
+  route("/commands/change-student-section", "admissions.ChangeStudentSection");
+  route("/commands/update-class-section", "admissions.UpdateClassSection");
+  route("/commands/update-academic-year", "admissions.UpdateAcademicYear");
 
   app.get("/students", async () => listStudents(pool));
   app.get("/academic-years", async () => listAcademicYears(pool));

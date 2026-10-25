@@ -24,7 +24,15 @@ const messages: Record<string, [404 | 409, string]> = {
   enrollments_one_per_year: [409, "The student is already enrolled in this school year."],
   enrollments_student_fk: [404, "The student does not exist."],
   enrollments_section_fk: [404, "The section does not exist."],
+  events_aggregate_id_aggregate_version_key: [409, "Someone else changed this at the same time. Reload to see the changes."],
 };
+
+export async function nextVersion(client: pg.PoolClient, aggregateId: string, expectedVersion: number, what: string) {
+  const { rows } = await client.query("select max(aggregate_version) as version from events where aggregate_id = $1", [aggregateId]);
+  if (rows[0].version === null) throw new Refused(404, `The ${what} does not exist.`);
+  if (rows[0].version !== expectedVersion) throw new Refused(409, `This ${what} was changed by someone else. Reload to see the changes.`);
+  return expectedVersion + 1;
+}
 
 async function replay<T>(client: pg.PoolClient, commandId: string): Promise<Result<T> | undefined> {
   const { rows } = await client.query("select payload from events where causation_id = $1", [commandId]);
