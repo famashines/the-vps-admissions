@@ -1,13 +1,27 @@
 import { randomUUID } from "node:crypto";
 import type { RegisterStudentCommandPayloadV1, StudentRegisteredEventPayloadV1 } from "@famashines/the-vps-contracts";
 import type pg from "pg";
-import { runCommand, type Command } from "./command.ts";
+import { Refused, runCommand, type Command } from "./command.ts";
 
 export type RegisterStudent = Command<RegisterStudentCommandPayloadV1>;
 
 const schoolYear = (date: Date) => Number(new Intl.DateTimeFormat("en", { timeZone: "Asia/Karachi", year: "numeric" }).format(date));
+const todayInPakistan = (date: Date) => new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi" }).format(date);
+
+export const MIN_AGE = 2;
+export const MAX_AGE = 25;
+
+export function ageOn(dateOfBirth: string, today: string) {
+  const [by, bm, bd] = dateOfBirth.split("-").map(Number);
+  const [ty, tm, td] = today.split("-").map(Number);
+  return ty - by - (tm < bm || (tm === bm && td < bd) ? 1 : 0);
+}
 
 export async function registerStudent(pool: pg.Pool, command: RegisterStudent, now = new Date()) {
+  const age = ageOn(command.payload.dateOfBirth, todayInPakistan(now));
+  if (age < MIN_AGE || age > MAX_AGE) {
+    throw new Refused(422, `The student must be ${MIN_AGE} to ${MAX_AGE} years old on the registration day.`, "dateOfBirth");
+  }
   const result = await runCommand<RegisterStudentCommandPayloadV1, StudentRegisteredEventPayloadV1>(
     pool,
     command,
