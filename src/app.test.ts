@@ -103,10 +103,81 @@ test("the list has the students, newest first, with the date as YYYY-MM-DD", { s
   assert.equal(list.statusCode, 200);
   assert.equal(list.json()[0].studentId, created.json().studentId);
   assert.equal(list.json()[0].dateOfBirth, "2016-03-14");
-  assert.deepEqual(Object.keys(list.json()[0]).sort(), ["admissionNumber", "dateOfBirth", "firstName", "gender", "guardian", "lastName", "studentId"]);
+  assert.deepEqual(Object.keys(list.json()[0]).sort(), ["admissionNumber", "dateOfBirth", "enrollments", "firstName", "gender", "guardian", "lastName", "studentId"]);
 });
 
 test("ready checks the database", { skip }, async () => {
   const response = await buildApp(pool).inject({ url: "/ready" });
   assert.deepEqual(response.json(), { status: "ok" });
+});
+
+const envelope = (commandType: string, payload: object, commandId: string = randomUUID()) => ({
+  commandId,
+  commandType,
+  version: 1,
+  issuedAt: new Date().toISOString(),
+  issuedBy: randomUUID(),
+  correlationId: randomUUID(),
+  payload,
+});
+
+test("enrollment: open a year, create sections, enroll a student, list them", { skip }, async () => {
+  const app = buildApp(pool);
+  const post = (path: string, type: string, payload: object, id?: string) =>
+    app.inject({ method: "POST", url: `/commands/${path}`, payload: envelope(type, payload, id) });
+
+  const year = await post("open-academic-year", "admissions.OpenAcademicYear", { name: "2026-27", startsOn: "2026-04-01", endsOn: "2027-03-31" });
+  assert.equal(year.statusCode, 201);
+  const academicYearId = year.json().academicYearId;
+
+  assert.equal((await post("open-academic-year", "admissions.OpenAcademicYear", { name: "2026-27", startsOn: "2028-04-01", endsOn: "2029-03-31" })).statusCode, 409);
+  const overlap = await post("open-academic-year", "admissions.OpenAcademicYear", { name: "2027-28", startsOn: "2027-03-01", endsOn: "2028-02-28" });
+  assert.equal(overlap.statusCode, 409);
+  assert.match(overlap.json().error, /overlaps/);
+  const backwards = await post("open-academic-year", "admissions.OpenAcademicYear", { name: "2030-31", startsOn: "2031-03-31", endsOn: "2030-04-01" });
+  assert.equal(backwards.statusCode, 422);
+
+  const sectionA = await post("create-class-section", "admissions.CreateClassSection", { academicYearId, grade: "class-3", section: "A" });
+  assert.equal(sectionA.statusCode, 201);
+  await post("create-class-section", "admissions.CreateClassSection", { academicYearId, grade: "class-10", section: "A" });
+  await post("create-class-section", "admissions.CreateClassSection", { academicYearId, grade: "nursery", section: "Rose" });
+  assert.equal((await post("create-class-section", "admissions.CreateClassSection", { academicYearId, grade: "class-3", section: "A" })).statusCode, 409);
+  const noYear = await post("create-class-section", "admissions.CreateClassSection", { academicYearId: randomUUID(), grade: "class-3", section: "A" });
+  assert.equal(noYear.statusCode, 404);
+
+  const student = (await app.inject({ method: "POST", url: "/commands/register-student", payload: command({ payload: { ...payload, firstName: "Zainab" } }) })).json();
+  const enrollId = randomUUID();
+  const enroll = await post("enroll-student", "admissions.EnrollStudent", { studentId: student.studentId, classSectionId: sectionA.json().classSectionId }, enrollId);
+  assert.equal(enroll.statusCode, 201);
+  assert.equal(enroll.json().academicYearId, academicYearId);
+  const again = await post("enroll-student", "admissions.EnrollStudent", { studentId: student.studentId, classSectionId: sectionA.json().classSectionId }, enrollId);
+  assert.equal(again.statusCode, 200);
+  assert.equal(again.json().enrollmentId, enroll.json().enrollmentId);
+  const second = await post("enroll-student", "admissions.EnrollStudent", { studentId: student.studentId, classSectionId: sectionA.json().classSectionId });
+  assert.equal(second.statusCode, 409);
+  assert.match(second.json().error, /already enrolled/);
+  assert.equal((await post("enroll-student", "admissions.EnrollStudent", { studentId: randomUUID(), classSectionId: sectionA.json().classSectionId })).statusCode, 404);
+  assert.equal((await post("enroll-student", "admissions.EnrollStudent", { studentId: student.studentId, classSectionId: randomUUID() })).statusCode, 404);
+
+  const years = (await app.inject({ url: "/academic-years" })).json();
+  const listed = years.find((y: { academicYearId: string }) => y.academicYearId === academicYearId);
+  assert.deepEqual(listed.sections.map((s: { grade: string; section: string; students: number }) => `${s.grade} ${s.section} ${s.students}`), ["nursery Rose 0", "class-3 A 1", "class-10 A 0"]);
+
+  const students = (await app.inject({ url: "/students" })).json();
+  const zainab = students.find((s: { studentId: string }) => s.studentId === student.studentId);
+  assert.deepEqual(zainab.enrollments, [{ academicYearId, academicYearName: "2026-27", classSectionId: sectionA.json().classSectionId, grade: "class-3", section: "A" }]);
+  const { rows } = await pool.query("select event_type, count(*)::int as n from events where event_type <> 'admissions.StudentRegistered' group by 1 order by 1");
+  assert.deepEqual(rows, [
+    { event_type: "admissions.AcademicYearOpened", n: 1 },
+    { event_type: "admissions.ClassSectionCreated", n: 3 },
+    { event_type: "admissions.StudentEnrolled", n: 1 },
+  ]);
+});
+
+test("enrollment: a command with the wrong payload or type is refused", { skip }, async () => {
+  const app = buildApp(pool);
+  const send = (path: string, body: object) => app.inject({ method: "POST", url: `/commands/${path}`, payload: body });
+  assert.equal((await send("create-class-section", envelope("admissions.CreateClassSection", { academicYearId: randomUUID(), grade: "class-11", section: "A" }))).statusCode, 400);
+  assert.equal((await send("enroll-student", envelope("admissions.CreateClassSection", { studentId: randomUUID(), classSectionId: randomUUID() }))).statusCode, 400);
+  assert.equal((await send("open-academic-year", envelope("admissions.OpenAcademicYear", { name: "2026/27", startsOn: "2026-04-01", endsOn: "2027-03-31" }))).statusCode, 400);
 });
