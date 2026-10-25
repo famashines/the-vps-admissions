@@ -13,6 +13,7 @@ let pool: pg.Pool;
 const payload = {
   firstName: "Ayesha",
   lastName: "Khan",
+  fatherName: "Imran Khan",
   dateOfBirth: "2016-03-14",
   gender: "female",
   guardian: { name: "Imran Khan", relation: "father", phone: "+923001234567" },
@@ -92,6 +93,8 @@ test("invalid commands are refused", { skip }, async () => {
   const post = (body: unknown) => app.inject({ method: "POST", url: "/commands/register-student", payload: body as object });
   assert.equal((await post({ ...command(), payload: { ...payload, dateOfBirth: "2016-02-30" } })).statusCode, 400);
   assert.equal((await post({ ...command(), payload: { ...payload, grade: "3" } })).statusCode, 400);
+  const { fatherName: _, ...noFather } = payload;
+  assert.equal((await post({ ...command(), payload: noFather })).statusCode, 400);
   assert.equal((await post({ ...command(), commandType: "admissions.EnrollStudent" })).statusCode, 400);
   assert.equal((await post({ ...command(), commandId: "not-a-uuid" })).statusCode, 400);
 });
@@ -103,7 +106,8 @@ test("the list has the students, newest first, with the date as YYYY-MM-DD", { s
   assert.equal(list.statusCode, 200);
   assert.equal(list.json()[0].studentId, created.json().studentId);
   assert.equal(list.json()[0].dateOfBirth, "2016-03-14");
-  assert.deepEqual(Object.keys(list.json()[0]).sort(), ["admissionNumber", "dateOfBirth", "enrollments", "firstName", "gender", "guardian", "lastName", "studentId"]);
+  assert.equal(list.json()[0].fatherName, "Imran Khan");
+  assert.deepEqual(Object.keys(list.json()[0]).sort(), ["admissionNumber", "dateOfBirth", "enrollments", "fatherName", "firstName", "gender", "guardian", "lastName", "studentId"]);
 });
 
 test("ready checks the database", { skip }, async () => {

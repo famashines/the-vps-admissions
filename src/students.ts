@@ -25,15 +25,16 @@ export async function registerStudent(pool: pg.Pool, command: RegisterStudent, n
         admissionNumber: `${year}-${String(rows[0].last).padStart(4, "0")}`,
         firstName: p.firstName,
         lastName: p.lastName,
+        fatherName: p.fatherName,
         dateOfBirth: p.dateOfBirth,
         gender: p.gender,
         guardian: p.guardian,
       };
       await client.query(
-        `insert into students (student_id, admission_number, first_name, last_name, date_of_birth, gender,
+        `insert into students (student_id, admission_number, first_name, last_name, father_name, date_of_birth, gender,
            guardian_name, guardian_relation, guardian_phone, registered_at, registered_by)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-        [student.studentId, student.admissionNumber, p.firstName, p.lastName, p.dateOfBirth, p.gender,
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+        [student.studentId, student.admissionNumber, p.firstName, p.lastName, p.fatherName, p.dateOfBirth, p.gender,
           p.guardian.name, p.guardian.relation, p.guardian.phone, now, command.issuedBy],
       );
       return { value: student, event: { type: "admissions.StudentRegistered", aggregateId: student.studentId, aggregateVersion: 1, payload: student } };
@@ -45,7 +46,7 @@ export async function registerStudent(pool: pg.Pool, command: RegisterStudent, n
 
 export async function listStudents(pool: pg.Pool) {
   const { rows } = await pool.query(
-    `select s.student_id, s.admission_number, s.first_name, s.last_name, s.date_of_birth, s.gender,
+    `select s.student_id, s.admission_number, s.first_name, s.last_name, s.father_name, s.date_of_birth, s.gender,
        s.guardian_name, s.guardian_relation, s.guardian_phone,
        coalesce(json_agg(json_build_object(
          'academicYearId', y.academic_year_id, 'academicYearName', y.name,
@@ -63,6 +64,7 @@ export async function listStudents(pool: pg.Pool) {
     admissionNumber: r.admission_number,
     firstName: r.first_name,
     lastName: r.last_name,
+    fatherName: r.father_name,
     dateOfBirth: r.date_of_birth,
     gender: r.gender,
     guardian: { name: r.guardian_name, relation: r.guardian_relation, phone: r.guardian_phone },
