@@ -8,9 +8,11 @@ export type NewEvent = { type: string; aggregateId: string; aggregateVersion: nu
 
 export class Refused extends Error {
   readonly status: 404 | 409 | 422;
-  constructor(status: 404 | 409 | 422, message: string) {
+  readonly field?: string;
+  constructor(status: 404 | 409 | 422, message: string, field?: string) {
     super(message);
     this.status = status;
+    this.field = field;
   }
 }
 

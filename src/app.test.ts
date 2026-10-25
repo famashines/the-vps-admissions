@@ -4,7 +4,7 @@ import { after, before, test } from "node:test";
 import pg from "pg";
 import { buildApp } from "./app.ts";
 import { createPool, migrate } from "./db.ts";
-import { registerStudent, type RegisterStudent } from "./students.ts";
+import { ageOn, registerStudent, type RegisterStudent } from "./students.ts";
 
 const base = process.env.TEST_DATABASE_URL;
 const schema = `test_${randomUUID().replaceAll("-", "")}`;
@@ -184,4 +184,26 @@ test("enrollment: a command with the wrong payload or type is refused", { skip }
   assert.equal((await send("create-class-section", envelope("admissions.CreateClassSection", { academicYearId: randomUUID(), grade: "class-11", section: "A" }))).statusCode, 400);
   assert.equal((await send("enroll-student", envelope("admissions.CreateClassSection", { studentId: randomUUID(), classSectionId: randomUUID() }))).statusCode, 400);
   assert.equal((await send("open-academic-year", envelope("admissions.OpenAcademicYear", { name: "2026/27", startsOn: "2026-04-01", endsOn: "2027-03-31" }))).statusCode, 400);
+});
+
+test("the age is counted in whole years, with the birthday", () => {
+  assert.equal(ageOn("2016-03-14", "2026-03-13"), 9);
+  assert.equal(ageOn("2016-03-14", "2026-03-14"), 10);
+  assert.equal(ageOn("2016-02-29", "2026-02-28"), 9);
+  assert.equal(ageOn("2016-02-29", "2026-03-01"), 10);
+});
+
+test("a student must be 2 to 25 years old on the registration day", { skip }, async () => {
+  const app = buildApp(pool);
+  const at = (dateOfBirth: string, now: string) => registerStudent(pool, command({ payload: { ...payload, dateOfBirth } }), new Date(now)).then(() => 201, (e) => e.status);
+  assert.equal(await at("1241-11-01", "2026-10-25T12:00:00Z"), 422);
+  assert.equal(await at("2025-01-01", "2026-10-25T12:00:00Z"), 422);
+  assert.equal(await at("2024-10-25", "2026-10-25T12:00:00Z"), 201);
+  assert.equal(await at("2001-10-25", "2026-10-25T12:00:00Z"), 201);
+  assert.equal(await at("2000-10-25", "2026-10-25T12:00:00Z"), 422);
+  assert.equal(await at("2024-10-26", "2026-10-25T18:59:00Z"), 422);
+  assert.equal(await at("2024-10-26", "2026-10-25T19:01:00Z"), 201);
+  const response = await app.inject({ method: "POST", url: "/commands/register-student", payload: command({ payload: { ...payload, dateOfBirth: "1241-11-01" } }) });
+  assert.equal(response.statusCode, 422);
+  assert.deepEqual(response.json().fields.map((f: { field: string }) => f.field), ["dateOfBirth"]);
 });

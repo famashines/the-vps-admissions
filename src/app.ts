@@ -46,7 +46,10 @@ export function buildApp(pool: pg.Pool, options: FastifyServerOptions = {}) {
         request.log.info({ commandType: type, commandId: command.commandId, replayed }, "command done");
         return reply.code(replayed ? 200 : 201).send(value);
       } catch (error) {
-        if (error instanceof Refused) return reply.code(error.status).send({ error: error.message });
+        if (error instanceof Refused) {
+          const fields = error.field ? [{ field: error.field, message: error.message }] : undefined;
+          return reply.code(error.status).send({ error: error.message, fields });
+        }
         throw error;
       }
     });

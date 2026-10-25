@@ -1,7 +1,7 @@
 # the-vps-admissions
 
 The admissions service of the-vps: it registers students. It is internal:
-only the BFF (`the-vps-authentication`) calls it, inside the cluster.
+only the gateway (`the-vps-gateway`) calls it, inside the cluster.
 
 Fastify on Node 24 (TypeScript, run directly), PostgreSQL through `pg`, the
 contracts of `@famashines/the-vps-contracts`.
@@ -12,7 +12,7 @@ contracts of `@famashines/the-vps-contracts`.
 | ------ | ---------------------------- | ----------------------------------------------------------- |
 | GET    | `/health`                    | Liveness: `{"status":"ok","release":"<commit>"}`             |
 | GET    | `/ready`                     | Readiness: 200 when the database answers, else 503           |
-| POST   | `/commands/register-student` | Body: `CommandEnvelopeV1` with `RegisterStudentCommandPayloadV1`. 201 with the student (`StudentRegisteredEventPayloadV1`), 200 when the same `commandId` came before, 400 when invalid |
+| POST   | `/commands/register-student` | Body: `CommandEnvelopeV1` with `RegisterStudentCommandPayloadV1`. 201 with the student (`StudentRegisteredEventPayloadV1`), 200 when the same `commandId` came before, 400 when invalid, 422 when the student is not 2 to 25 years old on the registration day (Pakistan time) |
 | POST   | `/commands/open-academic-year`   | `OpenAcademicYearCommandPayloadV1`: name like `2026-27`, start and end. 422 when the end is not after the start, 409 for a used name or an overlap |
 | POST   | `/commands/create-class-section` | `CreateClassSectionCommandPayloadV1`: year, grade, section. 409 when the section exists in the year, 404 for an unknown year |
 | POST   | `/commands/enroll-student`       | `EnrollStudentCommandPayloadV1`: student and section. 409 when the student has a section in that year, 404 for an unknown student or section |
