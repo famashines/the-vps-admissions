@@ -16,8 +16,12 @@ contracts of `@famashines/the-vps-contracts`.
 | POST   | `/commands/open-academic-year`   | `OpenAcademicYearCommandPayloadV1`: name like `2026-27`, start and end. 422 when the end is not after the start, 409 for a used name or an overlap |
 | POST   | `/commands/create-class-section` | `CreateClassSectionCommandPayloadV1`: year, grade, section. 409 when the section exists in the year, 404 for an unknown year |
 | POST   | `/commands/enroll-student`       | `EnrollStudentCommandPayloadV1`: student and section. 409 when the student has a section in that year, 404 for an unknown student or section |
-| GET    | `/students`                  | All students, newest first, each with `enrollments` (newest year first) |
-| GET    | `/academic-years`            | All years, newest first, each with its `sections` (grade order) and their number of students |
+| POST   | `/commands/update-student-details` | `UpdateStudentDetailsCommandPayloadV1`: all details except the admission number. 422 for the age rule (on the registration day) |
+| POST   | `/commands/change-student-section` | `ChangeStudentSectionCommandPayloadV1`: a new section for an enrollment. 422 when the section is in another school year |
+| POST   | `/commands/update-class-section`   | `UpdateClassSectionCommandPayloadV1`: grade and name. 409 for a grade change while the section has students, or a name that exists |
+| POST   | `/commands/update-academic-year`   | `UpdateAcademicYearCommandPayloadV1`: name and dates. Same rules as open |
+| GET    | `/students`                  | All students, newest first, each with `version` and `enrollments` (newest year first, each with `enrollmentId` and `version`) |
+| GET    | `/academic-years`            | All years, newest first, each with `version` and its `sections` (grade order, each with `version` and the number of students) |
 
 ## Register a student
 
@@ -35,6 +39,15 @@ the `commandId`, the domain rows, and one event (`StudentRegistered`,
 `AcademicYearOpened`, `ClassSectionCreated`, `StudentEnrolled`). A
 database rule with a name (see `migrations/002_enrollment.sql`) becomes a
 clear 404 or 409 message.
+
+## Edits and versions
+
+The version of a student, enrollment, section or school year is the
+`aggregateVersion` of its last event. An edit command sends
+`expectedVersion`. When it is not the current version, the answer is 409
+("changed by someone else"), and nothing changes. The new event gets
+`expectedVersion + 1`. Two edits at the same time with the same version: the
+unique rule on (`aggregate_id`, `aggregate_version`) lets only one pass.
 
 ## Events to NATS
 
