@@ -13,7 +13,11 @@ contracts of `@famashines/the-vps-contracts`.
 | GET    | `/health`                    | Liveness: `{"status":"ok","release":"<commit>"}`             |
 | GET    | `/ready`                     | Readiness: 200 when the database answers, else 503           |
 | POST   | `/commands/register-student` | Body: `CommandEnvelopeV1` with `RegisterStudentCommandPayloadV1`. 201 with the student (`StudentRegisteredEventPayloadV1`), 200 when the same `commandId` came before, 400 when invalid |
-| GET    | `/students`                  | All students, newest first                                   |
+| POST   | `/commands/open-academic-year`   | `OpenAcademicYearCommandPayloadV1`: name like `2026-27`, start and end. 422 when the end is not after the start, 409 for a used name or an overlap |
+| POST   | `/commands/create-class-section` | `CreateClassSectionCommandPayloadV1`: year, grade, section. 409 when the section exists in the year, 404 for an unknown year |
+| POST   | `/commands/enroll-student`       | `EnrollStudentCommandPayloadV1`: student and section. 409 when the student has a section in that year, 404 for an unknown student or section |
+| GET    | `/students`                  | All students, newest first, each with `enrollments` (newest year first) |
+| GET    | `/academic-years`            | All years, newest first, each with its `sections` (grade order) and their number of students |
 
 ## Register a student
 
@@ -23,6 +27,14 @@ One transaction does all of this:
 2. Take the next number of the year in Pakistan time: `2026-0001`, `2026-0002`, ...
 3. Insert the row in `students` (the read side).
 4. Insert `admissions.StudentRegistered` in `events` (append-only, `aggregateVersion` 1).
+
+## Commands
+
+Each command runs in `src/command.ts`: one transaction, a replay check on
+the `commandId`, the domain rows, and one event (`StudentRegistered`,
+`AcademicYearOpened`, `ClassSectionCreated`, `StudentEnrolled`). A
+database rule with a name (see `migrations/002_enrollment.sql`) becomes a
+clear 404 or 409 message.
 
 ## Database
 
