@@ -1,7 +1,7 @@
 import Fastify, { type FastifyServerOptions } from "fastify";
 import type pg from "pg";
 import { Refused, type Command, type Result } from "./command.ts";
-import { changeStudentSection, createClassSection, enrollStudent, listAcademicYears, openAcademicYear, updateAcademicYear, updateClassSection } from "./enrollment.ts";
+import { changeStudentClass, closeClass, enrollStudent, listAcademicYears, openAcademicYear, openClass, updateAcademicYear } from "./enrollment.ts";
 import { listStudents, registerStudent, updateStudentDetails } from "./students.ts";
 import { errorsOf, payloadValidators, validEnvelope } from "./validate.ts";
 
@@ -28,11 +28,11 @@ export function buildApp(pool: pg.Pool, options: FastifyServerOptions = {}) {
       return { value: student, replayed };
     },
     "admissions.OpenAcademicYear": (c) => openAcademicYear(pool, c),
-    "admissions.CreateClassSection": (c) => createClassSection(pool, c),
+    "admissions.OpenClass": (c) => openClass(pool, c),
     "admissions.EnrollStudent": (c) => enrollStudent(pool, c),
     "admissions.UpdateStudentDetails": (c) => updateStudentDetails(pool, c),
-    "admissions.ChangeStudentSection": (c) => changeStudentSection(pool, c),
-    "admissions.UpdateClassSection": (c) => updateClassSection(pool, c),
+    "admissions.ChangeStudentClass": (c) => changeStudentClass(pool, c),
+    "admissions.CloseClass": (c) => closeClass(pool, c),
     "admissions.UpdateAcademicYear": (c) => updateAcademicYear(pool, c),
   };
 
@@ -60,11 +60,11 @@ export function buildApp(pool: pg.Pool, options: FastifyServerOptions = {}) {
 
   route("/commands/register-student", "admissions.RegisterStudent");
   route("/commands/open-academic-year", "admissions.OpenAcademicYear");
-  route("/commands/create-class-section", "admissions.CreateClassSection");
+  route("/commands/open-class", "admissions.OpenClass");
   route("/commands/enroll-student", "admissions.EnrollStudent");
   route("/commands/update-student-details", "admissions.UpdateStudentDetails");
-  route("/commands/change-student-section", "admissions.ChangeStudentSection");
-  route("/commands/update-class-section", "admissions.UpdateClassSection");
+  route("/commands/change-student-class", "admissions.ChangeStudentClass");
+  route("/commands/close-class", "admissions.CloseClass");
   route("/commands/update-academic-year", "admissions.UpdateAcademicYear");
 
   app.get("/students", async () => listStudents(pool));

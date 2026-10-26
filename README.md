@@ -14,14 +14,14 @@ contracts of `@famashines/the-vps-contracts`.
 | GET    | `/ready`                     | Readiness: 200 when the database answers, else 503           |
 | POST   | `/commands/register-student` | Body: `CommandEnvelopeV1` with `RegisterStudentCommandPayloadV1`. 201 with the student (`StudentRegisteredEventPayloadV1`), 200 when the same `commandId` came before, 400 when invalid, 422 when the student is not 2 to 25 years old on the registration day (Pakistan time) |
 | POST   | `/commands/open-academic-year`   | `OpenAcademicYearCommandPayloadV1`: name like `2026-27`, start and end. 422 when the end is not after the start, 409 for a used name or an overlap |
-| POST   | `/commands/create-class-section` | `CreateClassSectionCommandPayloadV1`: year, grade, section. 409 when the section exists in the year, 404 for an unknown year |
-| POST   | `/commands/enroll-student`       | `EnrollStudentCommandPayloadV1`: student and section. 409 when the student has a section in that year, 404 for an unknown student or section |
+| POST   | `/commands/open-class`           | `OpenClassCommandPayloadV1`: year and grade. One class for each grade in a year: 409 when the grade has a class, 404 for an unknown year |
+| POST   | `/commands/close-class`          | `CloseClassCommandPayloadV1`: removes a class. 409 while the class has students |
+| POST   | `/commands/enroll-student`       | `EnrollStudentCommandPayloadV1`: student and class. 409 when the student has a class in that year, 404 for an unknown student or class |
 | POST   | `/commands/update-student-details` | `UpdateStudentDetailsCommandPayloadV1`: all details except the admission number. 422 for the age rule (on the registration day) |
-| POST   | `/commands/change-student-section` | `ChangeStudentSectionCommandPayloadV1`: a new section for an enrollment. 422 when the section is in another school year |
-| POST   | `/commands/update-class-section`   | `UpdateClassSectionCommandPayloadV1`: grade and name. 409 for a grade change while the section has students, or a name that exists |
+| POST   | `/commands/change-student-class`   | `ChangeStudentClassCommandPayloadV1`: a new class for an enrollment. 422 when the class is in another school year |
 | POST   | `/commands/update-academic-year`   | `UpdateAcademicYearCommandPayloadV1`: name and dates. Same rules as open |
 | GET    | `/students`                  | All students, newest first, each with `version` and `enrollments` (newest year first, each with `enrollmentId` and `version`) |
-| GET    | `/academic-years`            | All years, newest first, each with `version` and its `sections` (grade order, each with `version` and the number of students) |
+| GET    | `/academic-years`            | All years, newest first, each with `version` and its `classes` (grade order, each with `version` and the number of students) |
 
 ## Register a student
 
@@ -36,18 +36,34 @@ One transaction does all of this:
 
 Each command runs in `src/command.ts`: one transaction, a replay check on
 the `commandId`, the domain rows, and one event (`StudentRegistered`,
-`AcademicYearOpened`, `ClassSectionCreated`, `StudentEnrolled`). A
+`AcademicYearOpened`, `ClassOpened`, `StudentEnrolled`). A
 database rule with a name (see `migrations/002_enrollment.sql`) becomes a
 clear 404 or 409 message.
 
 ## Edits and versions
 
-The version of a student, enrollment, section or school year is the
+The version of a student, enrollment, class or school year is the
 `aggregateVersion` of its last event. An edit command sends
 `expectedVersion`. When it is not the current version, the answer is 409
 ("changed by someone else"), and nothing changes. The new event gets
 `expectedVersion + 1`. Two edits at the same time with the same version: the
 unique rule on (`aggregate_id`, `aggregate_version`) lets only one pass.
+
+## Grades and classes
+
+```
+pre-primary  playgroup, kg-1, kg-2
+primary      class-1 .. class-5
+middle       class-6 .. class-8
+secondary    class-9, class-10
+```
+
+A school year has at most one class for each grade, with no section.
+Migration `005_classes.sql` merged the old sections of a grade into one
+class: the oldest section stays, the students of the other sections get a
+`StudentClassChanged` event each, and the other sections get a `ClassClosed`
+event. The stream still has the events from before with the old names
+(`ClassSectionCreated`, `StudentSectionChanged`, with `classSectionId`).
 
 ## Events to NATS
 

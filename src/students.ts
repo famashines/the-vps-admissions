@@ -93,11 +93,11 @@ export async function listStudents(pool: pg.Pool) {
        coalesce(json_agg(json_build_object(
          'enrollmentId', e.enrollment_id, 'version', ${versionOf("e.enrollment_id")},
          'academicYearId', y.academic_year_id, 'academicYearName', y.name,
-         'classSectionId', c.class_section_id, 'grade', c.grade, 'section', c.section)
+         'classId', c.class_id, 'grade', c.grade)
          order by y.starts_on desc) filter (where e.enrollment_id is not null), '[]') as enrollments
      from students s
      left join enrollments e on e.student_id = s.student_id
-     left join class_sections c on c.class_section_id = e.class_section_id
+     left join classes c on c.class_id = e.class_id
      left join academic_years y on y.academic_year_id = e.academic_year_id
      group by s.student_id
      order by s.registered_at desc, s.admission_number desc`,
