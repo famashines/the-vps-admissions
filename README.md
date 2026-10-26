@@ -62,9 +62,8 @@ A school year has at most one class for each grade, with no section.
 Migration `005_classes.sql` merged the old sections of a grade into one
 class: the oldest section stays, the students of the other sections get a
 `StudentClassChanged` event each, and the other sections get a `ClassClosed`
-event. The stream
-still has the events from before with the old names (`ClassSectionCreated`,
-`StudentSectionChanged`, with `classSectionId`).
+event. The stream still has the events from before with the old names
+(`ClassSectionCreated`, `StudentSectionChanged`, with `classSectionId`).
 
 ## Events to NATS
 
