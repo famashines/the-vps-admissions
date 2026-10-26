@@ -19,11 +19,11 @@ export class Refused extends Error {
 const messages: Record<string, [404 | 409, string]> = {
   academic_years_name_unique: [409, "A school year with this name exists."],
   academic_years_no_overlap: [409, "This school year overlaps another school year."],
-  class_sections_unique: [409, "This section exists in the school year."],
-  class_sections_year_fk: [404, "The school year does not exist."],
+  classes_one_per_grade: [409, "This grade has a class in the school year."],
+  classes_year_fk: [404, "The school year does not exist."],
   enrollments_one_per_year: [409, "The student is already enrolled in this school year."],
   enrollments_student_fk: [404, "The student does not exist."],
-  enrollments_section_fk: [404, "The section does not exist."],
+  enrollments_class_fk: [404, "The class does not exist."],
   events_aggregate_id_aggregate_version_key: [409, "Someone else changed this at the same time. Reload to see the changes."],
 };
 
