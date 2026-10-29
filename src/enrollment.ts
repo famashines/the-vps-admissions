@@ -15,7 +15,7 @@ import type {
 } from "@famashines/the-vps-contracts";
 import type pg from "pg";
 import { nextVersion, Refused, runCommand, type Command } from "./command.ts";
-import { versionOf } from "./students.ts";
+import { refuseIfLeft, versionOf } from "./students.ts";
 
 export const GRADES = ["playgroup", "kg-1", "kg-2", "class-1", "class-2", "class-3", "class-4", "class-5", "class-6", "class-7", "class-8", "class-9", "class-10"];
 
@@ -66,6 +66,7 @@ export async function enrollStudent(pool: pg.Pool, command: Command<EnrollStuden
   return runCommand<EnrollStudentCommandPayloadV1, StudentEnrolledEventPayloadV1>(pool, command, async (client) => {
     const { rows } = await client.query("select academic_year_id from classes where class_id = $1", [p.classId]);
     if (!rows[0]) throw new Refused(404, "The class does not exist.");
+    await refuseIfLeft(client, p.studentId);
     const enrollment: StudentEnrolledEventPayloadV1 = {
       enrollmentId: randomUUID(),
       studentId: p.studentId,
@@ -88,6 +89,7 @@ export async function changeStudentClass(pool: pg.Pool, command: Command<ChangeS
     if (!target) throw new Refused(404, "The class does not exist.", "classId");
     const { rows } = await client.query("select student_id, academic_year_id, class_id from enrollments where enrollment_id = $1", [p.enrollmentId]);
     if (target.academic_year_id !== rows[0].academic_year_id) throw new Refused(422, "Choose a class of the same school year.", "classId");
+    await refuseIfLeft(client, rows[0].student_id);
     await client.query("update enrollments set class_id = $2 where enrollment_id = $1", [p.enrollmentId, p.classId]);
     const change: StudentClassChangedEventPayloadV1 = {
       enrollmentId: p.enrollmentId,

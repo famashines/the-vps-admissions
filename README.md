@@ -16,11 +16,13 @@ contracts of `@famashines/the-vps-contracts`.
 | POST   | `/commands/open-academic-year`   | `OpenAcademicYearCommandPayloadV1`: name like `2026-27`, start and end. 422 when the end is not after the start, 409 for a used name or an overlap |
 | POST   | `/commands/open-class`           | `OpenClassCommandPayloadV1`: year and grade. One class for each grade in a year: 409 when the grade has a class, 404 for an unknown year |
 | POST   | `/commands/close-class`          | `CloseClassCommandPayloadV1`: removes a class. 409 while the class has students |
-| POST   | `/commands/enroll-student`       | `EnrollStudentCommandPayloadV1`: student and class. 409 when the student has a class in that year, 404 for an unknown student or class |
+| POST   | `/commands/enroll-student`       | `EnrollStudentCommandPayloadV1`: student and class. 409 when the student has a class in that year or has left the school, 404 for an unknown student or class |
 | POST   | `/commands/update-student-details` | `UpdateStudentDetailsCommandPayloadV1`: all details except the admission number. 422 for the age rule (on the registration day) |
 | POST   | `/commands/change-student-class`   | `ChangeStudentClassCommandPayloadV1`: a new class for an enrollment. 422 when the class is in another school year |
 | POST   | `/commands/update-academic-year`   | `UpdateAcademicYearCommandPayloadV1`: name and dates. Same rules as open |
-| GET    | `/students`                  | All students, newest first, each with `version` and `enrollments` (newest year first, each with `enrollmentId` and `version`) |
+| POST   | `/commands/mark-student-left`      | `MarkStudentLeftCommandPayloadV1`: the leaving day and an optional reason. 422 when the day is in the future or before the registration day, 409 when the student has already left |
+| POST   | `/commands/cancel-student-leaving` | `CancelStudentLeavingCommandPayloadV1`: the student is active again. 409 when the student has not left |
+| GET    | `/students`                  | All students, newest first, each with `version`, `leftOn` and `leftReason` (null while active) and `enrollments` (newest year first, each with `enrollmentId` and `version`) |
 | GET    | `/academic-years`            | All years, newest first, each with `version` and its `classes` (grade order, each with `version` and the number of students) |
 
 ## Register a student

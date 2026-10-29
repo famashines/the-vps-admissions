@@ -1,8 +1,10 @@
 import {
+  CancelStudentLeavingCommandPayloadV1Schema,
   ChangeStudentClassCommandPayloadV1Schema,
   CloseClassCommandPayloadV1Schema,
   CommandEnvelopeV1Schema,
   EnrollStudentCommandPayloadV1Schema,
+  MarkStudentLeftCommandPayloadV1Schema,
   OpenAcademicYearCommandPayloadV1Schema,
   OpenClassCommandPayloadV1Schema,
   RegisterStudentCommandPayloadV1Schema,
@@ -26,5 +28,7 @@ export const payloadValidators = {
   "admissions.ChangeStudentClass": compile(ChangeStudentClassCommandPayloadV1Schema),
   "admissions.CloseClass": compile(CloseClassCommandPayloadV1Schema),
   "admissions.UpdateAcademicYear": compile(UpdateAcademicYearCommandPayloadV1Schema),
+  "admissions.MarkStudentLeft": compile(MarkStudentLeftCommandPayloadV1Schema),
+  "admissions.CancelStudentLeaving": compile(CancelStudentLeavingCommandPayloadV1Schema),
 };
 export const errorsOf = (validate: { errors?: unknown }) => ajv.errorsText(validate.errors as never, { separator: "; " });

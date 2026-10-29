@@ -2,7 +2,7 @@ import Fastify, { type FastifyServerOptions } from "fastify";
 import type pg from "pg";
 import { Refused, type Command, type Result } from "./command.ts";
 import { changeStudentClass, closeClass, enrollStudent, listAcademicYears, openAcademicYear, openClass, updateAcademicYear } from "./enrollment.ts";
-import { listStudents, registerStudent, updateStudentDetails } from "./students.ts";
+import { cancelStudentLeaving, listStudents, markStudentLeft, registerStudent, updateStudentDetails } from "./students.ts";
 import { errorsOf, payloadValidators, validEnvelope } from "./validate.ts";
 
 type CommandType = keyof typeof payloadValidators;
@@ -34,6 +34,8 @@ export function buildApp(pool: pg.Pool, options: FastifyServerOptions = {}) {
     "admissions.ChangeStudentClass": (c) => changeStudentClass(pool, c),
     "admissions.CloseClass": (c) => closeClass(pool, c),
     "admissions.UpdateAcademicYear": (c) => updateAcademicYear(pool, c),
+    "admissions.MarkStudentLeft": (c) => markStudentLeft(pool, c),
+    "admissions.CancelStudentLeaving": (c) => cancelStudentLeaving(pool, c),
   };
 
   const route = (path: string, type: CommandType) =>
@@ -66,6 +68,8 @@ export function buildApp(pool: pg.Pool, options: FastifyServerOptions = {}) {
   route("/commands/change-student-class", "admissions.ChangeStudentClass");
   route("/commands/close-class", "admissions.CloseClass");
   route("/commands/update-academic-year", "admissions.UpdateAcademicYear");
+  route("/commands/mark-student-left", "admissions.MarkStudentLeft");
+  route("/commands/cancel-student-leaving", "admissions.CancelStudentLeaving");
 
   app.get("/students", async () => listStudents(pool));
   app.get("/academic-years", async () => listAcademicYears(pool));
