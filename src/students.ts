@@ -1,6 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type {
+  CancelStudentLeavingCommandPayloadV1,
+  MarkStudentLeftCommandPayloadV1,
   RegisterStudentCommandPayloadV1,
+  StudentLeavingCancelledEventPayloadV1,
+  StudentLeftEventPayloadV1,
   StudentDetailsUpdatedEventPayloadV1,
   StudentRegisteredEventPayloadV1,
   UpdateStudentDetailsCommandPayloadV1,
@@ -84,12 +88,43 @@ export async function updateStudentDetails(pool: pg.Pool, command: Command<Updat
   }, now);
 }
 
+export async function markStudentLeft(pool: pg.Pool, command: Command<MarkStudentLeftCommandPayloadV1>, now = new Date()) {
+  const { studentId, expectedVersion, leftOn, reason } = command.payload;
+  if (leftOn > todayInPakistan(now)) throw new Refused(422, "The leaving day cannot be in the future.", "leftOn");
+  return runCommand<MarkStudentLeftCommandPayloadV1, StudentLeftEventPayloadV1>(pool, command, async (client) => {
+    const aggregateVersion = await nextVersion(client, studentId, expectedVersion, "student");
+    const { rows } = await client.query("select registered_at, left_on from students where student_id = $1 for update", [studentId]);
+    if (rows[0].left_on) throw new Refused(409, "The student has already left the school.");
+    if (leftOn < todayInPakistan(rows[0].registered_at)) throw new Refused(422, "The leaving day cannot be before the registration day.", "leftOn");
+    await client.query("update students set left_on = $2, left_reason = $3 where student_id = $1", [studentId, leftOn, reason ?? null]);
+    const left: StudentLeftEventPayloadV1 = { studentId, leftOn, ...(reason && { reason }) };
+    return { value: left, event: { type: "admissions.StudentLeft", aggregateId: studentId, aggregateVersion, payload: left } };
+  }, now);
+}
+
+export async function cancelStudentLeaving(pool: pg.Pool, command: Command<CancelStudentLeavingCommandPayloadV1>, now = new Date()) {
+  const { studentId, expectedVersion } = command.payload;
+  return runCommand<CancelStudentLeavingCommandPayloadV1, StudentLeavingCancelledEventPayloadV1>(pool, command, async (client) => {
+    const aggregateVersion = await nextVersion(client, studentId, expectedVersion, "student");
+    const { rows } = await client.query("select left_on from students where student_id = $1 for update", [studentId]);
+    if (!rows[0].left_on) throw new Refused(409, "The student has not left the school.");
+    await client.query("update students set left_on = null, left_reason = null where student_id = $1", [studentId]);
+    const cancelled: StudentLeavingCancelledEventPayloadV1 = { studentId, leftOn: rows[0].left_on };
+    return { value: cancelled, event: { type: "admissions.StudentLeavingCancelled", aggregateId: studentId, aggregateVersion, payload: cancelled } };
+  }, now);
+}
+
+export async function refuseIfLeft(client: pg.PoolClient, studentId: string) {
+  const { rows } = await client.query("select left_on from students where student_id = $1", [studentId]);
+  if (rows[0]?.left_on) throw new Refused(409, "The student has left the school. Cancel the leaving first.");
+}
+
 export const versionOf = (column: string) => `(select max(aggregate_version) from events where aggregate_id = ${column})`;
 
 export async function listStudents(pool: pg.Pool) {
   const { rows } = await pool.query(
     `select s.student_id, s.admission_number, s.first_name, s.last_name, s.father_name, s.date_of_birth, s.gender,
-       s.guardian_name, s.guardian_relation, s.guardian_phone, ${versionOf("s.student_id")} as version,
+       s.guardian_name, s.guardian_relation, s.guardian_phone, s.left_on, s.left_reason, ${versionOf("s.student_id")} as version,
        coalesce(json_agg(json_build_object(
          'enrollmentId', e.enrollment_id, 'version', ${versionOf("e.enrollment_id")},
          'academicYearId', y.academic_year_id, 'academicYearName', y.name,
@@ -112,6 +147,8 @@ export async function listStudents(pool: pg.Pool) {
     dateOfBirth: r.date_of_birth,
     gender: r.gender,
     guardian: { name: r.guardian_name, relation: r.guardian_relation, phone: r.guardian_phone },
+    leftOn: r.left_on,
+    leftReason: r.left_reason,
     enrollments: r.enrollments,
   }));
 }

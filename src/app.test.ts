@@ -111,7 +111,7 @@ test("the list has the students, newest first, with the date as YYYY-MM-DD", { s
   assert.equal(list.json()[0].studentId, created.json().studentId);
   assert.equal(list.json()[0].dateOfBirth, "2016-03-14");
   assert.equal(list.json()[0].fatherName, "Imran Khan");
-  assert.deepEqual(Object.keys(list.json()[0]).sort(), ["admissionNumber", "dateOfBirth", "enrollments", "fatherName", "firstName", "gender", "guardian", "lastName", "studentId", "version"]);
+  assert.deepEqual(Object.keys(list.json()[0]).sort(), ["admissionNumber", "dateOfBirth", "enrollments", "fatherName", "firstName", "gender", "guardian", "lastName", "leftOn", "leftReason", "studentId", "version"]);
 });
 
 test("ready checks the database", { skip }, async () => {
@@ -342,4 +342,59 @@ test("migration 005 merges the sections of a grade into one class, with an event
     await db.end();
     rmSync(dir, { recursive: true });
   }
+});
+
+test("leaving: mark a student as left, refuse a new class, cancel the leaving", { skip }, async () => {
+  const app = buildApp(pool);
+  const post = (path: string, type: string, payload: object, id?: string) =>
+    app.inject({ method: "POST", url: `/commands/${path}`, payload: envelope(type, payload, id) });
+  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Karachi" }).format(new Date());
+
+  const year = (await post("open-academic-year", "admissions.OpenAcademicYear", { name: "2042-43", startsOn: "2042-04-01", endsOn: "2043-03-31" })).json();
+  const a = (await post("open-class", "admissions.OpenClass", { academicYearId: year.academicYearId, grade: "class-2" })).json();
+  const b = (await post("open-class", "admissions.OpenClass", { academicYearId: year.academicYearId, grade: "class-3" })).json();
+  const student = (await app.inject({ method: "POST", url: "/commands/register-student", payload: command({ payload: { ...payload, firstName: "Zara" } }) })).json();
+  const enrollment = (await post("enroll-student", "admissions.EnrollStudent", { studentId: student.studentId, classId: a.classId })).json();
+  const leave = { studentId: student.studentId, leftOn: today, reason: "Family moved to Lahore" };
+
+  const future = await post("mark-student-left", "admissions.MarkStudentLeft", { ...leave, leftOn: "2099-01-01", expectedVersion: 1 });
+  assert.equal(future.statusCode, 422);
+  assert.equal(future.json().fields[0].field, "leftOn");
+  const early = await post("mark-student-left", "admissions.MarkStudentLeft", { ...leave, leftOn: "2020-01-01", expectedVersion: 1 });
+  assert.equal(early.statusCode, 422);
+  assert.match(early.json().error, /before the registration day/);
+  assert.equal((await post("mark-student-left", "admissions.MarkStudentLeft", { ...leave, reason: " x ", expectedVersion: 1 })).statusCode, 400);
+  assert.equal((await post("mark-student-left", "admissions.MarkStudentLeft", { ...leave, studentId: randomUUID(), expectedVersion: 1 })).statusCode, 404);
+
+  const leaveId = randomUUID();
+  const left = await post("mark-student-left", "admissions.MarkStudentLeft", { ...leave, expectedVersion: 1 }, leaveId);
+  assert.equal(left.statusCode, 201);
+  assert.deepEqual(left.json(), leave);
+  assert.equal((await post("mark-student-left", "admissions.MarkStudentLeft", { ...leave, expectedVersion: 1 }, leaveId)).statusCode, 200);
+  const again = await post("mark-student-left", "admissions.MarkStudentLeft", { ...leave, expectedVersion: 2 });
+  assert.equal(again.statusCode, 409);
+  assert.match(again.json().error, /already left/);
+
+  const listed = (await app.inject({ url: "/students" })).json().find((s: { studentId: string }) => s.studentId === student.studentId);
+  assert.deepEqual([listed.version, listed.leftOn, listed.leftReason], [2, today, "Family moved to Lahore"]);
+  const move = await post("change-student-class", "admissions.ChangeStudentClass", { enrollmentId: enrollment.enrollmentId, expectedVersion: 1, classId: b.classId });
+  assert.equal(move.statusCode, 409);
+  assert.match(move.json().error, /has left the school/);
+  const other = (await post("open-academic-year", "admissions.OpenAcademicYear", { name: "2043-44", startsOn: "2043-04-01", endsOn: "2044-03-31" })).json();
+  const next = (await post("open-class", "admissions.OpenClass", { academicYearId: other.academicYearId, grade: "class-3" })).json();
+  assert.equal((await post("enroll-student", "admissions.EnrollStudent", { studentId: student.studentId, classId: next.classId })).statusCode, 409);
+
+  assert.equal((await post("cancel-student-leaving", "admissions.CancelStudentLeaving", { studentId: student.studentId, expectedVersion: 1 })).statusCode, 409);
+  const cancelled = await post("cancel-student-leaving", "admissions.CancelStudentLeaving", { studentId: student.studentId, expectedVersion: 2 });
+  assert.equal(cancelled.statusCode, 201);
+  assert.deepEqual(cancelled.json(), { studentId: student.studentId, leftOn: today });
+  const notLeft = await post("cancel-student-leaving", "admissions.CancelStudentLeaving", { studentId: student.studentId, expectedVersion: 3 });
+  assert.equal(notLeft.statusCode, 409);
+  assert.match(notLeft.json().error, /has not left/);
+  assert.equal((await post("change-student-class", "admissions.ChangeStudentClass", { enrollmentId: enrollment.enrollmentId, expectedVersion: 1, classId: b.classId })).statusCode, 201);
+
+  const back = (await app.inject({ url: "/students" })).json().find((s: { studentId: string }) => s.studentId === student.studentId);
+  assert.deepEqual([back.leftOn, back.leftReason], [null, null]);
+  const { rows } = await pool.query("select event_type from events where aggregate_id = $1 order by aggregate_version", [student.studentId]);
+  assert.deepEqual(rows.map((r) => r.event_type), ["admissions.StudentRegistered", "admissions.StudentLeft", "admissions.StudentLeavingCancelled"]);
 });
