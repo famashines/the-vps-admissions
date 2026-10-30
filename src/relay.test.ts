@@ -3,6 +3,9 @@ import { randomUUID } from "node:crypto";
 import { after, before, test } from "node:test";
 import { jetstreamManager } from "@nats-io/jetstream";
 import type { NatsConnection } from "@nats-io/transport-node";
+import { context, propagation, ROOT_CONTEXT } from "@opentelemetry/api";
+import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
+import { W3CTraceContextPropagator } from "@opentelemetry/core";
 import pg from "pg";
 import { createPool, migrate } from "./db.ts";
 import { connectNats, ensureStream, publishBatch, STREAM } from "./relay.ts";
@@ -82,4 +85,22 @@ test("a crash after the publish and before the mark does not make a second messa
   await pool.query("update events set published_at = null");
   assert.ok((await publishBatch(pool, nc)) >= 2);
   assert.equal(await messages(), before);
+});
+
+test("the trace of the command goes with the event to NATS, as the traceparent header", { skip }, async () => {
+  context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
+  propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+  const traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
+  const request = propagation.extract(ROOT_CONTEXT, { traceparent: `00-${traceId}-00f067aa0ba902b7-01` });
+  await pool.query("update events set published_at = now() where published_at is null");
+  const { student } = await context.with(request, register);
+  const { rows } = await pool.query("select trace_parent from events where aggregate_id = $1", [student.studentId]);
+  assert.equal(rows[0].trace_parent, `00-${traceId}-00f067aa0ba902b7-01`);
+  assert.equal(await publishBatch(pool, nc), 1);
+  const jsm = await jetstreamManager(nc);
+  const last = await jsm.streams.getMessage(STREAM, { seq: await messages() });
+  assert.equal(last!.json<{ aggregateId: string }>().aggregateId, student.studentId);
+  assert.match(last!.header.get("traceparent"), new RegExp(`^00-${traceId}-[0-9a-f]{16}-01$`));
+  context.disable();
+  propagation.disable();
 });
