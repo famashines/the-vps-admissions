@@ -80,6 +80,31 @@ the stream drops the duplicate by its id. The stream `ADMISSIONS`
 When NATS is down, the service still works and the events wait in the outbox.
 Settings: `NATS_URL`, `NATS_USER`, `NATS_PASSWORD` (no `NATS_URL`: no relay).
 
+## Telemetry
+
+`npm start` loads `src/telemetry.ts` first (`node --import`). It is the same
+file in the 3 services:
+
+- Traces: OpenTelemetry, OTLP HTTP to Tempo. Spans for each request (with
+  `http.route`) and for each SQL query in a request (pg, only under a parent
+  span, so the relay that runs each second makes no traces). The probes are
+  not traced.
+- A command stores the `traceparent` of its request with its event
+  (`events.trace_parent`). The relay publishes the event in a
+  `publish <event type>` producer span under that trace, and sends the
+  `traceparent` of that span as a NATS header. A consumer such as the fees
+  saga continues the same trace.
+- Metrics, a Prometheus exporter on port `9464` (`METRICS_PORT`):
+  `http_server_request_duration_seconds` by `http_route`, `commands_total` by
+  `command_type` and `result` (done, replayed, refused, failed),
+  `events_published_total` by `event_type`, and `outbox_unpublished_events`.
+- Logs: each line has `trace_id` and `span_id` when a span is active.
+
+Settings: `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
+`OTEL_RESOURCE_ATTRIBUTES`, and `OTEL_SDK_DISABLED=true` to turn it off. The
+tests do not load the telemetry. At shutdown, the spans of the last 5 seconds
+can be lost.
+
 ## Database
 
 `DATABASE_URL` comes from the CNPG secret `the-vps-db-app`. The SQL files in

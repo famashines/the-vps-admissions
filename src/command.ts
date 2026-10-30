@@ -1,10 +1,19 @@
 import { randomUUID } from "node:crypto";
 import type { CommandEnvelopeV1 } from "@famashines/the-vps-contracts";
+import { context, metrics, propagation } from "@opentelemetry/api";
 import type pg from "pg";
 
 export type Command<P> = CommandEnvelopeV1 & { payload: P };
 export type Result<T> = { value: T; replayed: boolean };
 export type NewEvent = { type: string; aggregateId: string; aggregateVersion: number; payload: object };
+
+const commands = metrics.getMeter("the-vps-admissions").createCounter("commands", { description: "Commands by type and result" });
+
+export function traceParent() {
+  const carrier: { traceparent?: string } = {};
+  propagation.inject(context.active(), carrier);
+  return carrier.traceparent ?? null;
+}
 
 export class Refused extends Error {
   readonly status: 404 | 409 | 422;
@@ -45,31 +54,38 @@ export async function runCommand<P, T extends object>(
   work: (client: pg.PoolClient) => Promise<{ value: T; event: NewEvent }>,
   now = new Date(),
 ): Promise<Result<T>> {
+  const count = (result: "done" | "replayed" | "refused" | "failed") => commands.add(1, { command_type: command.commandType, result });
   const client = await pool.connect();
   try {
     await client.query("begin");
     const earlier = await replay<T>(client, command.commandId);
     if (earlier) {
       await client.query("rollback");
+      count("replayed");
       return earlier;
     }
     const { value, event } = await work(client);
     await client.query(
       `insert into events (event_id, event_type, version, aggregate_id, aggregate_version, occurred_at,
-         correlation_id, causation_id, issued_by, payload)
-       values ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9)`,
-      [randomUUID(), event.type, event.aggregateId, event.aggregateVersion, now, command.correlationId, command.commandId, command.issuedBy, event.payload],
+         correlation_id, causation_id, issued_by, payload, trace_parent)
+       values ($1, $2, 1, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [randomUUID(), event.type, event.aggregateId, event.aggregateVersion, now, command.correlationId, command.commandId, command.issuedBy, event.payload, traceParent()],
     );
     await client.query("commit");
+    count("done");
     return { value, replayed: false };
   } catch (error) {
     await client.query("rollback");
     const { code, constraint } = error as { code?: string; constraint?: string };
     if (code === "23505" && constraint === "events_causation_id_key") {
       const earlier = await replay<T>(client, command.commandId);
-      if (earlier) return earlier;
+      if (earlier) {
+        count("replayed");
+        return earlier;
+      }
     }
     const known = constraint && messages[constraint];
+    count(known || error instanceof Refused ? "refused" : "failed");
     if (known) throw new Refused(known[0], known[1]);
     throw error;
   } finally {
