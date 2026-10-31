@@ -32,7 +32,11 @@ const register = () =>
       fatherName: "Relay Father",
       dateOfBirth: "2016-03-14",
       gender: "female",
-      guardian: { name: "Relay Father", relation: "father", phone: "+923001234567" },
+      guardian: { name: "Relay Father", relation: "father", phone: "+923001234567", cnic: "35202-7654321-9" },
+      bFormNumber: `35202-${String(Math.floor(Math.random() * 1e7)).padStart(7, "0")}-1`,
+      address: "Relay Street, Lahore",
+      familyStatus: "both-parents-alive",
+      siblings: { count: 0, studentIds: [] },
     },
   });
 

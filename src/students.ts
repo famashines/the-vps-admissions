@@ -33,6 +33,25 @@ function checkAge(dateOfBirth: string, registeredAt: Date) {
   }
 }
 
+type Details = RegisterStudentCommandPayloadV1;
+
+async function checkBForm(client: pg.PoolClient, bFormNumber: string, studentId: string | null) {
+  const { rows } = await client.query(
+    "select admission_number from students where b_form_number = $1 and student_id is distinct from $2",
+    [bFormNumber, studentId],
+  );
+  if (rows[0]) throw new Refused(409, `A student with this B-Form number is already registered (${rows[0].admission_number}).`, "bFormNumber");
+}
+
+async function saveSiblings(client: pg.PoolClient, studentId: string, { count, studentIds }: Details["siblings"]) {
+  if (studentIds.length > count) throw new Refused(422, "The number of siblings cannot be less than the siblings linked in the school.", "siblings.count");
+  if (studentIds.includes(studentId)) throw new Refused(422, "A student cannot be their own sibling.", "siblings.studentIds");
+  const { rows } = await client.query("select count(*)::int as found from students where student_id = any($1::uuid[])", [studentIds]);
+  if (rows[0].found !== studentIds.length) throw new Refused(422, "A linked sibling is not a student of the school.", "siblings.studentIds");
+  await client.query("delete from student_siblings where student_id = $1", [studentId]);
+  await client.query("insert into student_siblings (student_id, sibling_id) select $1, unnest($2::uuid[])", [studentId, studentIds]);
+}
+
 export async function registerStudent(pool: pg.Pool, command: RegisterStudent, now = new Date()) {
   checkAge(command.payload.dateOfBirth, now);
   const result = await runCommand<RegisterStudentCommandPayloadV1, StudentRegisteredEventPayloadV1>(
@@ -50,20 +69,19 @@ export async function registerStudent(pool: pg.Pool, command: RegisterStudent, n
       const student: StudentRegisteredEventPayloadV1 = {
         studentId: randomUUID(),
         admissionNumber: `${year}-${String(rows[0].last).padStart(4, "0")}`,
-        firstName: p.firstName,
-        lastName: p.lastName,
-        fatherName: p.fatherName,
-        dateOfBirth: p.dateOfBirth,
-        gender: p.gender,
-        guardian: p.guardian,
+        ...p,
       };
+      await checkBForm(client, p.bFormNumber, null);
       await client.query(
         `insert into students (student_id, admission_number, first_name, last_name, father_name, date_of_birth, gender,
-           guardian_name, guardian_relation, guardian_phone, registered_at, registered_by)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+           guardian_name, guardian_relation, guardian_phone, guardian_cnic, b_form_number, address, family_status,
+           family_status_note, sibling_count, registered_at, registered_by)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
         [student.studentId, student.admissionNumber, p.firstName, p.lastName, p.fatherName, p.dateOfBirth, p.gender,
-          p.guardian.name, p.guardian.relation, p.guardian.phone, now, command.issuedBy],
+          p.guardian.name, p.guardian.relation, p.guardian.phone, p.guardian.cnic, p.bFormNumber, p.address, p.familyStatus,
+          p.familyStatusNote ?? null, p.siblings.count, now, command.issuedBy],
       );
+      await saveSiblings(client, student.studentId, p.siblings);
       return { value: student, event: { type: "admissions.StudentRegistered", aggregateId: student.studentId, aggregateVersion: 1, payload: student } };
     },
     now,
@@ -75,14 +93,18 @@ export async function updateStudentDetails(pool: pg.Pool, command: Command<Updat
   const { studentId, expectedVersion, ...details } = command.payload;
   return runCommand<UpdateStudentDetailsCommandPayloadV1, StudentDetailsUpdatedEventPayloadV1>(pool, command, async (client) => {
     const aggregateVersion = await nextVersion(client, studentId, expectedVersion, "student");
+    await checkBForm(client, details.bFormNumber, studentId);
     const { rows } = await client.query(
       `update students set first_name = $2, last_name = $3, father_name = $4, date_of_birth = $5, gender = $6,
-         guardian_name = $7, guardian_relation = $8, guardian_phone = $9
+         guardian_name = $7, guardian_relation = $8, guardian_phone = $9, guardian_cnic = $10, b_form_number = $11,
+         address = $12, family_status = $13, family_status_note = $14, sibling_count = $15
        where student_id = $1 returning registered_at`,
       [studentId, details.firstName, details.lastName, details.fatherName, details.dateOfBirth, details.gender,
-        details.guardian.name, details.guardian.relation, details.guardian.phone],
+        details.guardian.name, details.guardian.relation, details.guardian.phone, details.guardian.cnic, details.bFormNumber,
+        details.address, details.familyStatus, details.familyStatusNote ?? null, details.siblings.count],
     );
     checkAge(details.dateOfBirth, rows[0].registered_at);
+    await saveSiblings(client, studentId, details.siblings);
     const student: StudentDetailsUpdatedEventPayloadV1 = { studentId, ...details };
     return { value: student, event: { type: "admissions.StudentDetailsUpdated", aggregateId: studentId, aggregateVersion, payload: student } };
   }, now);
@@ -124,7 +146,10 @@ export const versionOf = (column: string) => `(select max(aggregate_version) fro
 export async function listStudents(pool: pg.Pool) {
   const { rows } = await pool.query(
     `select s.student_id, s.admission_number, s.first_name, s.last_name, s.father_name, s.date_of_birth, s.gender,
-       s.guardian_name, s.guardian_relation, s.guardian_phone, s.left_on, s.left_reason, ${versionOf("s.student_id")} as version,
+       s.guardian_name, s.guardian_relation, s.guardian_phone, s.guardian_cnic, s.b_form_number, s.address, s.family_status,
+       s.family_status_note, s.sibling_count, s.left_on, s.left_reason, ${versionOf("s.student_id")} as version,
+       (select coalesce(json_agg(ss.sibling_id order by ss.sibling_id), '[]') from student_siblings ss
+         where ss.student_id = s.student_id) as sibling_ids,
        coalesce(json_agg(json_build_object(
          'enrollmentId', e.enrollment_id, 'version', ${versionOf("e.enrollment_id")},
          'academicYearId', y.academic_year_id, 'academicYearName', y.name,
@@ -146,7 +171,12 @@ export async function listStudents(pool: pg.Pool) {
     fatherName: r.father_name,
     dateOfBirth: r.date_of_birth,
     gender: r.gender,
-    guardian: { name: r.guardian_name, relation: r.guardian_relation, phone: r.guardian_phone },
+    guardian: { name: r.guardian_name, relation: r.guardian_relation, phone: r.guardian_phone, cnic: r.guardian_cnic },
+    bFormNumber: r.b_form_number,
+    address: r.address,
+    familyStatus: r.family_status,
+    familyStatusNote: r.family_status_note,
+    siblings: r.sibling_count === null ? null : { count: r.sibling_count, studentIds: r.sibling_ids },
     leftOn: r.left_on,
     leftReason: r.left_reason,
     enrollments: r.enrollments,
