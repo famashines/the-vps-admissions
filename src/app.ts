@@ -1,6 +1,6 @@
 import Fastify, { type FastifyServerOptions } from "fastify";
 import type pg from "pg";
-import { Refused, type Command, type Result } from "./command.ts";
+import { Refused, type Command, type Result, zeroCommandCounts } from "./command.ts";
 import { changeStudentClass, closeClass, enrollStudent, listAcademicYears, openAcademicYear, openClass, updateAcademicYear } from "./enrollment.ts";
 import { cancelStudentLeaving, listStudents, markStudentLeft, registerStudent, updateStudentDetails } from "./students.ts";
 import { errorsOf, payloadValidators, validEnvelope } from "./validate.ts";
@@ -37,6 +37,7 @@ export function buildApp(pool: pg.Pool, options: FastifyServerOptions = {}) {
     "admissions.MarkStudentLeft": (c) => markStudentLeft(pool, c),
     "admissions.CancelStudentLeaving": (c) => cancelStudentLeaving(pool, c),
   };
+  zeroCommandCounts(Object.keys(handlers));
 
   const route = (path: string, type: CommandType) =>
     app.post(path, async (request, reply) => {

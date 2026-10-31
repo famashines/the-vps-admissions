@@ -98,6 +98,8 @@ file in the 3 services:
   `http_server_request_duration` (seconds) by `http_route`, `commands_total` by
   `command_type` and `result` (done, replayed, refused, failed),
   `events_published_total` by `event_type`, and `outbox_unpublished_events`.
+  At start, each command type and each event type in the stream starts at 0,
+  so `increase()` also counts the first event after a restart.
 - Logs: each line has `trace_id` and `span_id` when a span is active.
 
 Settings: `OTEL_SERVICE_NAME`, `OTEL_EXPORTER_OTLP_ENDPOINT`,
