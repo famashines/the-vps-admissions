@@ -12,17 +12,17 @@ contracts of `@famashines/the-vps-contracts`.
 | ------ | ---------------------------- | ----------------------------------------------------------- |
 | GET    | `/health`                    | Liveness: `{"status":"ok","release":"<commit>"}`             |
 | GET    | `/ready`                     | Readiness: 200 when the database answers, else 503           |
-| POST   | `/commands/register-student` | Body: `CommandEnvelopeV1` with `RegisterStudentCommandPayloadV1`. 201 with the student (`StudentRegisteredEventPayloadV1`), 200 when the same `commandId` came before, 400 when invalid, 422 when the student is not 2 to 25 years old on the registration day (Pakistan time) |
+| POST   | `/commands/register-student` | Body: `CommandEnvelopeV1` with `RegisterStudentCommandPayloadV1`. 201 with the student (`StudentRegisteredEventPayloadV1`), 200 when the same `commandId` came before, 400 when invalid, 422 when the student is not 2 to 25 years old on the registration day (Pakistan time) or a sibling link is wrong, 409 when the B-Form number is registered |
 | POST   | `/commands/open-academic-year`   | `OpenAcademicYearCommandPayloadV1`: name like `2026-27`, start and end. 422 when the end is not after the start, 409 for a used name or an overlap |
 | POST   | `/commands/open-class`           | `OpenClassCommandPayloadV1`: year and grade. One class for each grade in a year: 409 when the grade has a class, 404 for an unknown year |
 | POST   | `/commands/close-class`          | `CloseClassCommandPayloadV1`: removes a class. 409 while the class has students |
 | POST   | `/commands/enroll-student`       | `EnrollStudentCommandPayloadV1`: student and class. 409 when the student has a class in that year or has left the school, 404 for an unknown student or class |
-| POST   | `/commands/update-student-details` | `UpdateStudentDetailsCommandPayloadV1`: all details except the admission number. 422 for the age rule (on the registration day) |
+| POST   | `/commands/update-student-details` | `UpdateStudentDetailsCommandPayloadV1`: all details except the admission number. 422 for the age rule (on the registration day) or a wrong sibling link, 409 when another student has the B-Form number |
 | POST   | `/commands/change-student-class`   | `ChangeStudentClassCommandPayloadV1`: a new class for an enrollment. 422 when the class is in another school year |
 | POST   | `/commands/update-academic-year`   | `UpdateAcademicYearCommandPayloadV1`: name and dates. Same rules as open |
 | POST   | `/commands/mark-student-left`      | `MarkStudentLeftCommandPayloadV1`: the leaving day and an optional reason. 422 when the day is in the future or before the registration day, 409 when the student has already left |
 | POST   | `/commands/cancel-student-leaving` | `CancelStudentLeavingCommandPayloadV1`: the student is active again. 409 when the student has not left |
-| GET    | `/students`                  | All students, newest first, each with `version`, `leftOn` and `leftReason` (null while active) and `enrollments` (newest year first, each with `enrollmentId` and `version`) |
+| GET    | `/students`                  | All students, newest first, each with `version`, `leftOn` and `leftReason` (null while active), the registration details (`bFormNumber`, `guardian.cnic`, `address`, `familyStatus`, `familyStatusNote`, `siblings`; null for a student registered before 0.8.0 until an edit) and `enrollments` (newest year first, each with `enrollmentId` and `version`) |
 | GET    | `/academic-years`            | All years, newest first, each with `version` and its `classes` (grade order, each with `version` and the number of students) |
 
 ## Register a student
@@ -31,8 +31,9 @@ One transaction does all of this:
 
 1. If an event with this `commandId` exists, answer that student (no second student).
 2. Take the next number of the year in Pakistan time: `2026-0001`, `2026-0002`, ...
-3. Insert the row in `students` (the read side).
-4. Insert `admissions.StudentRegistered` in `events` (append-only, `aggregateVersion` 1).
+3. Check the B-Form number (one student each) and the sibling links (students of the school, not more than the sibling count).
+4. Insert the row in `students` and the links in `student_siblings` (the read side).
+5. Insert `admissions.StudentRegistered` in `events` (append-only, `aggregateVersion` 1).
 
 ## Commands
 

@@ -20,19 +20,30 @@ const payload = {
   fatherName: "Imran Khan",
   dateOfBirth: "2016-03-14",
   gender: "female",
-  guardian: { name: "Imran Khan", relation: "father", phone: "+923001234567" },
+  guardian: { name: "Imran Khan", relation: "father", phone: "+923001234567", cnic: "35202-7654321-9" },
+  bFormNumber: "35202-0000000-0",
+  address: "House 12, Street 4, Gulberg III, Lahore",
+  familyStatus: "both-parents-alive",
+  siblings: { count: 0, studentIds: [] as string[] },
 } as const;
 
-const command = (overrides: Partial<RegisterStudent> = {}): RegisterStudent => ({
-  commandId: randomUUID(),
-  commandType: "admissions.RegisterStudent",
-  version: 1,
-  issuedAt: new Date().toISOString(),
-  issuedBy: randomUUID(),
-  correlationId: randomUUID(),
-  payload: { ...payload },
-  ...overrides,
-});
+let bForms = 0;
+const nextBForm = () => `35202-${String(++bForms).padStart(7, "0")}-1`;
+
+const command = (overrides: Partial<RegisterStudent> = {}): RegisterStudent => {
+  const built: RegisterStudent = {
+    commandId: randomUUID(),
+    commandType: "admissions.RegisterStudent",
+    version: 1,
+    issuedAt: new Date().toISOString(),
+    issuedBy: randomUUID(),
+    correlationId: randomUUID(),
+    payload: { ...payload },
+    ...overrides,
+  };
+  if (built.payload.bFormNumber === payload.bFormNumber) built.payload = { ...built.payload, bFormNumber: nextBForm() };
+  return built;
+};
 
 before(async () => {
   if (!base) return;
@@ -111,7 +122,7 @@ test("the list has the students, newest first, with the date as YYYY-MM-DD", { s
   assert.equal(list.json()[0].studentId, created.json().studentId);
   assert.equal(list.json()[0].dateOfBirth, "2016-03-14");
   assert.equal(list.json()[0].fatherName, "Imran Khan");
-  assert.deepEqual(Object.keys(list.json()[0]).sort(), ["admissionNumber", "dateOfBirth", "enrollments", "fatherName", "firstName", "gender", "guardian", "lastName", "leftOn", "leftReason", "studentId", "version"]);
+  assert.deepEqual(Object.keys(list.json()[0]).sort(), ["address", "admissionNumber", "bFormNumber", "dateOfBirth", "enrollments", "familyStatus", "familyStatusNote", "fatherName", "firstName", "gender", "guardian", "lastName", "leftOn", "leftReason", "siblings", "studentId", "version"]);
 });
 
 test("ready checks the database", { skip }, async () => {
@@ -228,7 +239,7 @@ test("edit: details, class and school year, each with its version; a class with 
   const student = (await app.inject({ method: "POST", url: "/commands/register-student", payload: command({ payload: { ...payload, firstName: "Hamza" } }) })).json();
   const enrollment = (await post("enroll-student", "admissions.EnrollStudent", { studentId: student.studentId, classId: a.classId })).json();
 
-  const details = { ...payload, studentId: student.studentId, firstName: "Hamza Ali", guardian: { ...payload.guardian, phone: "+923331112222" } };
+  const details = { ...payload, bFormNumber: student.bFormNumber, studentId: student.studentId, firstName: "Hamza Ali", guardian: { ...payload.guardian, phone: "+923331112222" } };
   const editId = randomUUID();
   const edited = await post("update-student-details", "admissions.UpdateStudentDetails", { ...details, expectedVersion: 1 }, editId);
   assert.equal(edited.statusCode, 201);
@@ -397,4 +408,89 @@ test("leaving: mark a student as left, refuse a new class, cancel the leaving", 
   assert.deepEqual([back.leftOn, back.leftReason], [null, null]);
   const { rows } = await pool.query("select event_type from events where aggregate_id = $1 order by aggregate_version", [student.studentId]);
   assert.deepEqual(rows.map((r) => r.event_type), ["admissions.StudentRegistered", "admissions.StudentLeft", "admissions.StudentLeavingCancelled"]);
+});
+
+test("registration details are saved, sent in the event and listed", { skip }, async () => {
+  const app = buildApp(pool);
+  const register = (p: object) => app.inject({ method: "POST", url: "/commands/register-student", payload: command({ payload: { ...payload, ...p } }) });
+  const brother = (await register({ firstName: "Umar" })).json();
+  const response = await register({
+    firstName: "Maryam",
+    bFormNumber: "35202-9999999-2",
+    familyStatus: "father-deceased",
+    familyStatusNote: "The uncle pays the fees.",
+    siblings: { count: 3, studentIds: [brother.studentId] },
+  });
+  assert.equal(response.statusCode, 201);
+  const maryam = response.json();
+  const { rows } = await pool.query("select payload from events where aggregate_id = $1", [maryam.studentId]);
+  assert.deepEqual(
+    { ...rows[0].payload, studentId: undefined, admissionNumber: undefined },
+    { ...payload, studentId: undefined, admissionNumber: undefined, firstName: "Maryam", bFormNumber: "35202-9999999-2", familyStatus: "father-deceased", familyStatusNote: "The uncle pays the fees.", siblings: { count: 3, studentIds: [brother.studentId] } },
+  );
+  const listed = (await app.inject({ url: "/students" })).json().find((s: { studentId: string }) => s.studentId === maryam.studentId);
+  assert.equal(listed.bFormNumber, "35202-9999999-2");
+  assert.equal(listed.guardian.cnic, "35202-7654321-9");
+  assert.equal(listed.address, payload.address);
+  assert.equal(listed.familyStatus, "father-deceased");
+  assert.equal(listed.familyStatusNote, "The uncle pays the fees.");
+  assert.deepEqual(listed.siblings, { count: 3, studentIds: [brother.studentId] });
+});
+
+test("a B-Form number belongs to one student", { skip }, async () => {
+  const app = buildApp(pool);
+  const first = (await app.inject({ method: "POST", url: "/commands/register-student", payload: command() })).json();
+  const again = await app.inject({ method: "POST", url: "/commands/register-student", payload: command({ payload: { ...payload, bFormNumber: first.bFormNumber } }) });
+  assert.equal(again.statusCode, 409);
+  assert.equal(again.json().error, `A student with this B-Form number is already registered (${first.admissionNumber}).`);
+  assert.deepEqual(again.json().fields.map((f: { field: string }) => f.field), ["bFormNumber"]);
+  const other = (await app.inject({ method: "POST", url: "/commands/register-student", payload: command() })).json();
+  const edit = await app.inject({
+    method: "POST",
+    url: "/commands/update-student-details",
+    payload: envelope("admissions.UpdateStudentDetails", { ...payload, bFormNumber: first.bFormNumber, studentId: other.studentId, expectedVersion: 1 }),
+  });
+  assert.equal(edit.statusCode, 409);
+  const same = await app.inject({
+    method: "POST",
+    url: "/commands/update-student-details",
+    payload: envelope("admissions.UpdateStudentDetails", { ...payload, bFormNumber: first.bFormNumber, studentId: first.studentId, expectedVersion: 1 }),
+  });
+  assert.equal(same.statusCode, 201);
+});
+
+test("sibling links must be students of the school, not the student, and not more than the count", { skip }, async () => {
+  const app = buildApp(pool);
+  const register = (siblings: { count: number; studentIds: string[] }) => app.inject({ method: "POST", url: "/commands/register-student", payload: command({ payload: { ...payload, siblings } }) });
+  const sister = (await register({ count: 0, studentIds: [] })).json();
+  const tooMany = await register({ count: 0, studentIds: [sister.studentId] });
+  assert.equal(tooMany.statusCode, 422);
+  assert.deepEqual(tooMany.json().fields.map((f: { field: string }) => f.field), ["siblings.count"]);
+  const unknown = await register({ count: 1, studentIds: [randomUUID()] });
+  assert.equal(unknown.statusCode, 422);
+  assert.deepEqual(unknown.json().fields.map((f: { field: string }) => f.field), ["siblings.studentIds"]);
+  const self = await app.inject({
+    method: "POST",
+    url: "/commands/update-student-details",
+    payload: envelope("admissions.UpdateStudentDetails", { ...payload, bFormNumber: sister.bFormNumber, studentId: sister.studentId, expectedVersion: 1, siblings: { count: 1, studentIds: [sister.studentId] } }),
+  });
+  assert.equal(self.statusCode, 422);
+  const { rows } = await pool.query("select count(*)::int as n from student_siblings where student_id = $1", [sister.studentId]);
+  assert.equal(rows[0].n, 0);
+});
+
+test("a student registered before has empty registration details until edited", { skip }, async () => {
+  const app = buildApp(pool);
+  const old = randomUUID();
+  await pool.query(
+    `insert into students (student_id, admission_number, first_name, last_name, father_name, date_of_birth, gender, guardian_name, guardian_relation, guardian_phone, registered_at, registered_by)
+     values ($1, '1999-0001', 'Old', 'Pupil', 'Old Father', '2016-01-01', 'male', 'Old Father', 'father', '+923001234567', now(), $2)`,
+    [old, randomUUID()],
+  );
+  const listed = (await app.inject({ url: "/students" })).json().find((s: { studentId: string }) => s.studentId === old);
+  assert.equal(listed.bFormNumber, null);
+  assert.equal(listed.guardian.cnic, null);
+  assert.equal(listed.address, null);
+  assert.equal(listed.familyStatus, null);
+  assert.equal(listed.siblings, null);
 });

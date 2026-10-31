@@ -37,6 +37,7 @@ const messages: Record<string, [404 | 409, string]> = {
   enrollments_one_per_year: [409, "The student is already enrolled in this school year."],
   enrollments_student_fk: [404, "The student does not exist."],
   enrollments_class_fk: [404, "The class does not exist."],
+  students_b_form_number_unique: [409, "A student with this B-Form number is already registered."],
   events_aggregate_id_aggregate_version_key: [409, "Someone else changed this at the same time. Reload to see the changes."],
 };
 
