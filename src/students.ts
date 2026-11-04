@@ -35,6 +35,10 @@ function checkAge(dateOfBirth: string, registeredAt: Date) {
 
 type Details = RegisterStudentCommandPayloadV1;
 
+function checkPhones({ phone, phone2 }: Details["guardian"]) {
+  if (phone === phone2) throw new Refused(422, "Phone No 2 must be different from Phone No 1.", "guardian.phone2");
+}
+
 async function checkBForm(client: pg.PoolClient, bFormNumber: string, studentId: string | null) {
   const { rows } = await client.query(
     "select admission_number from students where b_form_number = $1 and student_id is distinct from $2",
@@ -54,6 +58,7 @@ async function saveSiblings(client: pg.PoolClient, studentId: string, { count, s
 
 export async function registerStudent(pool: pg.Pool, command: RegisterStudent, now = new Date()) {
   checkAge(command.payload.dateOfBirth, now);
+  checkPhones(command.payload.guardian);
   const result = await runCommand<RegisterStudentCommandPayloadV1, StudentRegisteredEventPayloadV1>(
     pool,
     command,
@@ -75,11 +80,11 @@ export async function registerStudent(pool: pg.Pool, command: RegisterStudent, n
       await client.query(
         `insert into students (student_id, admission_number, first_name, last_name, father_name, date_of_birth, gender,
            guardian_name, guardian_relation, guardian_phone, guardian_cnic, b_form_number, address, family_status,
-           family_status_note, sibling_count, registered_at, registered_by)
-         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+           family_status_note, sibling_count, registered_at, registered_by, guardian_phone2, previous_school_name, previous_class)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)`,
         [student.studentId, student.admissionNumber, p.firstName, p.lastName, p.fatherName, p.dateOfBirth, p.gender,
           p.guardian.name, p.guardian.relation, p.guardian.phone, p.guardian.cnic, p.bFormNumber, p.address, p.familyStatus,
-          p.familyStatusNote ?? null, p.siblings.count, now, command.issuedBy],
+          p.familyStatusNote ?? null, p.siblings.count, now, command.issuedBy, p.guardian.phone2 ?? null, p.previousSchoolName ?? null, p.previousClass ?? null],
       );
       await saveSiblings(client, student.studentId, p.siblings);
       return { value: student, event: { type: "admissions.StudentRegistered", aggregateId: student.studentId, aggregateVersion: 1, payload: student } };
@@ -91,17 +96,20 @@ export async function registerStudent(pool: pg.Pool, command: RegisterStudent, n
 
 export async function updateStudentDetails(pool: pg.Pool, command: Command<UpdateStudentDetailsCommandPayloadV1>, now = new Date()) {
   const { studentId, expectedVersion, ...details } = command.payload;
+  checkPhones(details.guardian);
   return runCommand<UpdateStudentDetailsCommandPayloadV1, StudentDetailsUpdatedEventPayloadV1>(pool, command, async (client) => {
     const aggregateVersion = await nextVersion(client, studentId, expectedVersion, "student");
     await checkBForm(client, details.bFormNumber, studentId);
     const { rows } = await client.query(
       `update students set first_name = $2, last_name = $3, father_name = $4, date_of_birth = $5, gender = $6,
          guardian_name = $7, guardian_relation = $8, guardian_phone = $9, guardian_cnic = $10, b_form_number = $11,
-         address = $12, family_status = $13, family_status_note = $14, sibling_count = $15
+         address = $12, family_status = $13, family_status_note = $14, sibling_count = $15,
+         guardian_phone2 = $16, previous_school_name = $17, previous_class = $18
        where student_id = $1 returning registered_at`,
       [studentId, details.firstName, details.lastName, details.fatherName, details.dateOfBirth, details.gender,
         details.guardian.name, details.guardian.relation, details.guardian.phone, details.guardian.cnic, details.bFormNumber,
-        details.address, details.familyStatus, details.familyStatusNote ?? null, details.siblings.count],
+        details.address, details.familyStatus, details.familyStatusNote ?? null, details.siblings.count,
+        details.guardian.phone2 ?? null, details.previousSchoolName ?? null, details.previousClass ?? null],
     );
     checkAge(details.dateOfBirth, rows[0].registered_at);
     await saveSiblings(client, studentId, details.siblings);
@@ -146,8 +154,8 @@ export const versionOf = (column: string) => `(select max(aggregate_version) fro
 export async function listStudents(pool: pg.Pool) {
   const { rows } = await pool.query(
     `select s.student_id, s.admission_number, s.first_name, s.last_name, s.father_name, s.date_of_birth, s.gender,
-       s.guardian_name, s.guardian_relation, s.guardian_phone, s.guardian_cnic, s.b_form_number, s.address, s.family_status,
-       s.family_status_note, s.sibling_count, s.left_on, s.left_reason, ${versionOf("s.student_id")} as version,
+       s.guardian_name, s.guardian_relation, s.guardian_phone, s.guardian_phone2, s.guardian_cnic, s.b_form_number, s.address, s.family_status,
+       s.family_status_note, s.sibling_count, s.previous_school_name, s.previous_class, s.left_on, s.left_reason, ${versionOf("s.student_id")} as version,
        (select coalesce(json_agg(ss.sibling_id order by ss.sibling_id), '[]') from student_siblings ss
          where ss.student_id = s.student_id) as sibling_ids,
        coalesce(json_agg(json_build_object(
@@ -171,12 +179,14 @@ export async function listStudents(pool: pg.Pool) {
     fatherName: r.father_name,
     dateOfBirth: r.date_of_birth,
     gender: r.gender,
-    guardian: { name: r.guardian_name, relation: r.guardian_relation, phone: r.guardian_phone, cnic: r.guardian_cnic },
+    guardian: { name: r.guardian_name, relation: r.guardian_relation, phone: r.guardian_phone, phone2: r.guardian_phone2, cnic: r.guardian_cnic },
     bFormNumber: r.b_form_number,
     address: r.address,
     familyStatus: r.family_status,
     familyStatusNote: r.family_status_note,
     siblings: r.sibling_count === null ? null : { count: r.sibling_count, studentIds: r.sibling_ids },
+    previousSchoolName: r.previous_school_name,
+    previousClass: r.previous_class,
     leftOn: r.left_on,
     leftReason: r.left_reason,
     enrollments: r.enrollments,

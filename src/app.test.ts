@@ -122,7 +122,7 @@ test("the list has the students, newest first, with the date as YYYY-MM-DD", { s
   assert.equal(list.json()[0].studentId, created.json().studentId);
   assert.equal(list.json()[0].dateOfBirth, "2016-03-14");
   assert.equal(list.json()[0].fatherName, "Imran Khan");
-  assert.deepEqual(Object.keys(list.json()[0]).sort(), ["address", "admissionNumber", "bFormNumber", "dateOfBirth", "enrollments", "familyStatus", "familyStatusNote", "fatherName", "firstName", "gender", "guardian", "lastName", "leftOn", "leftReason", "siblings", "studentId", "version"]);
+  assert.deepEqual(Object.keys(list.json()[0]).sort(), ["address", "admissionNumber", "bFormNumber", "dateOfBirth", "enrollments", "familyStatus", "familyStatusNote", "fatherName", "firstName", "gender", "guardian", "lastName", "leftOn", "leftReason", "previousClass", "previousSchoolName", "siblings", "studentId", "version"]);
 });
 
 test("ready checks the database", { skip }, async () => {
@@ -493,4 +493,49 @@ test("a student registered before has empty registration details until edited", 
   assert.equal(listed.address, null);
   assert.equal(listed.familyStatus, null);
   assert.equal(listed.siblings, null);
+});
+
+test("the previous school and the second phone are saved, sent in the event, listed and cleared by an edit", { skip }, async () => {
+  const app = buildApp(pool);
+  const extras = { previousSchoolName: "Allied School, Gulberg", previousClass: "Class 3" };
+  const guardian = { ...payload.guardian, phone2: "+923211234567" };
+  const created = await app.inject({ method: "POST", url: "/commands/register-student", payload: command({ payload: { ...payload, ...extras, guardian } }) });
+  assert.equal(created.statusCode, 201);
+  const student = created.json();
+  const listedStudent = async () => (await app.inject({ url: "/students" })).json().find((s: { studentId: string }) => s.studentId === student.studentId);
+  const { rows } = await pool.query("select payload from events where aggregate_id = $1", [student.studentId]);
+  assert.equal(rows[0].payload.guardian.phone2, guardian.phone2);
+  assert.equal(rows[0].payload.previousSchoolName, extras.previousSchoolName);
+  assert.equal(rows[0].payload.previousClass, extras.previousClass);
+  const listed = await listedStudent();
+  assert.equal(listed.guardian.phone2, guardian.phone2);
+  assert.equal(listed.previousSchoolName, extras.previousSchoolName);
+  assert.equal(listed.previousClass, extras.previousClass);
+
+  const edited = await app.inject({
+    method: "POST",
+    url: "/commands/update-student-details",
+    payload: { ...command(), commandType: "admissions.UpdateStudentDetails", payload: { ...payload, bFormNumber: student.bFormNumber, studentId: student.studentId, expectedVersion: 1 } },
+  });
+  assert.equal(edited.statusCode, 201);
+  const cleared = await listedStudent();
+  assert.equal(cleared.guardian.phone2, null);
+  assert.equal(cleared.previousSchoolName, null);
+  assert.equal(cleared.previousClass, null);
+});
+
+test("Phone No 2 must be different from Phone No 1", { skip }, async () => {
+  const app = buildApp(pool);
+  const same = { ...payload.guardian, phone2: payload.guardian.phone };
+  const registered = await app.inject({ method: "POST", url: "/commands/register-student", payload: command({ payload: { ...payload, guardian: same } }) });
+  assert.equal(registered.statusCode, 422);
+  assert.equal(registered.json().fields[0].field, "guardian.phone2");
+  const student = (await app.inject({ method: "POST", url: "/commands/register-student", payload: command() })).json();
+  const edited = await app.inject({
+    method: "POST",
+    url: "/commands/update-student-details",
+    payload: { ...command(), commandType: "admissions.UpdateStudentDetails", payload: { ...payload, bFormNumber: student.bFormNumber, studentId: student.studentId, expectedVersion: 1, guardian: same } },
+  });
+  assert.equal(edited.statusCode, 422);
+  assert.equal(edited.json().fields[0].field, "guardian.phone2");
 });
